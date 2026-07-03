@@ -22,59 +22,59 @@
   Fork of <a href="https://github.com/badlogic/pi-mono">Pi</a> by <a href="https://github.com/mariozechner">@mariozechner</a> 
 </p>
 
-## BearMaxDD / OMP Custom 版说明
+## BearMaxDD / OMP 自定义版说明
 
 这是 BearMaxDD 维护的个人魔改版 OMP 分支，长期分支为 `mima/omp-custom`。
 
-本分支的维护目标是：**保留个人工作流增强，同时持续跟随官方 `can1357/oh-my-pi` 更新**。官方代码通过 `upstream` 同步，个人 fork 通过 `origin` 推送。
+本分支的维护目标是：**保留个人工作流增强，同时持续跟随官方 `can1357/oh-my-pi` 更新**。官方代码通过 `upstream` 同步，个人派生仓库通过 `origin` 推送。
 
 当前状态：
 
-- Fork 仓库：`https://github.com/BearMaxDD/oh-my-pi`
+- 派生仓库：`https://github.com/BearMaxDD/oh-my-pi`
 - 长期魔改分支：`mima/omp-custom`
 - 当前官方基线：`upstream/main` / `v16.3.3`
-- 本地魔改导入点：`4772b1573 chore: import local OMP customizations`
-- 当前合并点：`edda6f526 merge upstream v16.3.3 into custom OMP branch`
+- 本地魔改导入点：`4772b1573`，用于沉淀旧版个人定制内容
+- 当前官方合并点：`edda6f526`，已合并官方 `v16.3.3`
 
 ### 这个版本实现的主要功能
 
 本分支在官方 OMP 基础上，重点增加和强化以下能力：
 
-- **Autonomous Plan Run 工作流**
+- **自主计划执行工作流**
   - 增加 `/plan-run <request>` 自主执行入口。
-  - 引入 Plan Execution Book、Plan Run Manifest、阶段 ledger、完成证据、acceptance review、repair loop 等执行闭环。
+  - 引入计划执行记录、计划运行清单、阶段台账、完成证据、最终验收审查、修复循环等执行闭环。
   - 让主会话负责规划、门禁、最终验收，子代理负责具体实现任务。
 
-- **Superpowers 角色化执行体系**
+- **增强技能角色化执行体系**
   - 增加 `acceptance`、`task`、`advisor` 以及多组 `superpowers:*` 模型角色。
-  - 支持 TDD Writer、Implementer、Test Runner、Spec Reviewer、Quality Reviewer、Acceptance、Runtime Simulator、Security Reviewer、Release Auditor 等角色。
+  - 支持测试驱动编写者、实现者、测试执行者、规格审查者、质量审查者、验收者、运行时模拟者、安全审查者、发布审计者等角色。
   - 模型选择器和状态展示会显示角色说明、模型分配和执行职责。
 
 - **codebase-memory 图谱优先上下文**
   - 增加 codebase-memory 自动上下文注入。
   - 对代码理解、计划、调试、实现、审查类请求，优先提示使用 `search_graph`、`trace_path`、`get_code_snippet`、`query_graph` 等图谱工具。
-  - 增加 Superpowers codebase-memory gate，可配置为 `off`、`advisory` 或 `required`。
+  - 增加增强技能的 codebase-memory 门禁，可配置为 `off`、`advisory` 或 `required`。
 
 - **子代理执行与审查门禁**
-  - 增强 `task` 执行器，支持模型路由证据、任务进度渲染、yield 结果聚合、schema 校验和子代理提醒。
-  - 增加 advisor gate、task review、main acceptance review、quality review 等多层审查材料。
+  - 增强 `task` 执行器，支持模型路由证据、任务进度渲染、产出结果聚合、结构校验和子代理提醒。
+  - 增加顾问门禁、任务审查、主会话最终验收审查、质量审查等多层审查材料。
   - 支持把实现、测试、审查、验收拆成不同角色的可追踪执行包。
 
 - **TDD、验收与真实运行证据**
-  - 增加 TDD evidence、runtime scenarios、real-runtime simulation、global impact、gate failure summary 等执行证据模块。
-  - 支持在计划执行中记录 red/green、验证命令、失败原因、修复循环和最终验收结论。
+  - 增加测试驱动证据、运行场景、真实运行模拟、全局影响分析、门禁失败摘要等执行证据模块。
+  - 支持在计划执行中记录红灯/绿灯状态、验证命令、失败原因、修复循环和最终验收结论。
 
-- **TODO / Plan Run 状态面板**
-  - 扩展 todo phase、role-bound todo snapshot、blocked 状态、模型/角色绑定展示。
-  - 增加 Plan Run panel model 和 status sink，让长任务执行状态更容易在 TUI/RPC 中展示。
+- **待办事项与计划执行状态面板**
+  - 扩展待办事项阶段、角色绑定待办快照、阻塞状态、模型/角色绑定展示。
+  - 增加计划执行面板模型和状态汇入能力，让长任务执行状态更容易在终端界面和远程过程调用中展示。
 
-- **智能 compaction 与上下文保护**
-  - 增加 smart compaction router、snapcompact fallback、hard ceiling、progress guard 等上下文维护能力。
+- **智能压缩与上下文保护**
+  - 增加智能压缩路由、快照压缩降级、硬上限、进度保护等上下文维护能力。
   - 目标是在长任务、子代理、多轮验收场景中减少上下文溢出和无效循环。
 
 - **个人开发流程支持**
-  - 增加 superpowers agent bridge、superpowers agents CLI、计划执行 book 工具、repair loop 工具等本地工作流组件。
-  - 补充分段计划写作、执行计划、codebase-memory recon/reindex 等围绕 AI 开发闭环的工具链。
+  - 增加增强技能代理桥接、增强技能代理命令行工具、计划执行记录工具、修复循环工具等本地工作流组件。
+  - 补充分段计划写作、执行计划、codebase-memory 侦察/重建索引等围绕 AI 开发闭环的工具链。
 
 ### 分支与同步约定
 
@@ -107,6 +107,16 @@ bun run check
 git push
 ```
 
+提交信息约定：
+
+```sh
+git commit -m "文档：说明自定义分支能力"
+git commit -m "修复：处理计划执行状态同步"
+git commit -m "功能：增强 codebase-memory 自动上下文"
+```
+
+提交信息优先使用中文，格式建议为：`类型：简短说明`。常用类型包括：`功能`、`修复`、`文档`、`测试`、`重构`、`构建`、`维护`。
+
 ### 验证命令
 
 本分支修改后至少运行：
@@ -115,7 +125,7 @@ git push
 bun run check
 ```
 
-Plan Run / Superpowers / TODO / advisor 相关变更，建议额外运行对应测试：
+计划执行、增强技能、待办事项、顾问模型相关变更，建议额外运行对应测试：
 
 ```sh
 bun test packages/coding-agent/test/skills-codebase-memory-gate.test.ts \
