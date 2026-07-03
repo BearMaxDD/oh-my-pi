@@ -2463,8 +2463,7 @@ export class GithubTool implements AgentTool<typeof githubSchema, GhToolDetails>
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): GithubTool | null {
-		if (!git.github.available()) return null;
-		return new GithubTool(session);
+		return session.settings.get("github.enabled") ? new GithubTool(session) : null;
 	}
 
 	async execute(

@@ -28,6 +28,12 @@ import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-intera
 import { checkBashInterception } from "./bash-interceptor";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
+import {
+	assertNoUnauthorizedMainWrites,
+	captureFileSnapshot,
+	findUnauthorizedMainWrites,
+	isMainAgentCodeWriteRestricted,
+} from "./code-write-policy";
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import { formatStyledTruncationWarning, type OutputMeta, stripOutputNotice } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
@@ -707,6 +713,12 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		if (asyncRequested && !this.#asyncEnabled) {
 			throw new ToolError("Async bash execution is disabled. Enable async.enabled to use async mode.");
 		}
+		const mainCodeWritesRestricted = isMainAgentCodeWriteRestricted(this.session.settings, this.session.taskDepth);
+		if (mainCodeWritesRestricted && asyncRequested) {
+			throw new ToolError(
+				"Async bash is unavailable while task.codeWrites=subagent-only is active for the main agent. Dispatch a subagent for code-writing commands.",
+			);
+		}
 
 		// Check both the original command and the cwd-normalized command so
 		// leading `cd ... &&` wrappers do not hide either shell-navigation rules
@@ -806,7 +818,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// auto-background would otherwise silently disable the terminal route).
 		const clientBridge = this.session.getClientBridge?.();
 		const bridgeTerminalAvailable = Boolean(
-			clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty,
+			clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty && !mainCodeWritesRestricted,
 		);
 
 		const autoBgManager = this.session.asyncJobManager;
@@ -814,6 +826,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// instead of failing every bash call until a slot frees up.
 		if (
 			this.#autoBackgroundEnabled &&
+			!mainCodeWritesRestricted &&
 			!pty &&
 			!bridgeTerminalAvailable &&
 			autoBgManager &&
@@ -864,7 +877,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 
 		// Route through the client terminal when the client advertises the terminal capability.
 		// Skip when pty=true (PTY needs the local terminal UI).
-		if (clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty) {
+		if (clientBridge?.capabilities.terminal && clientBridge.createTerminal && !pty && !mainCodeWritesRestricted) {
 			const bridgeWallTimeStart = performance.now();
 			const handle = await clientBridge.createTerminal({
 				command,
@@ -1044,6 +1057,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			pendingNotices.push("pty requested but unavailable in this environment; ran without a terminal");
 		}
 		const wallTimeStart = performance.now();
+		const beforeSnapshot = mainCodeWritesRestricted ? await captureFileSnapshot(commandCwd) : undefined;
 		const result: BashResult | BashInteractiveResult = interactiveUi
 			? await runInteractiveBashPty(interactiveUi, {
 					command,
@@ -1066,6 +1080,10 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
 				});
 		const wallTimeMs = performance.now() - wallTimeStart;
+		if (beforeSnapshot) {
+			const afterSnapshot = await captureFileSnapshot(commandCwd);
+			assertNoUnauthorizedMainWrites(findUnauthorizedMainWrites(beforeSnapshot, afterSnapshot));
+		}
 		if (result.cancelled) {
 			const out = normalizeResultOutput(result);
 			// PTY output carries no cancel/timeout notice of its own; annotate so

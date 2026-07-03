@@ -136,8 +136,9 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"GitHub",
 		"Output Limits",
 		"Execution",
-		"Discovery & MCP",
 		"Developer",
+		"Superpowers",
+		"Discovery & MCP",
 	],
 	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills"],
 	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Privacy"],
@@ -266,6 +267,7 @@ type SettingDef =
 export interface ModelTagDef {
 	name: string;
 	color?: string;
+	description?: string;
 	/** If true, the role is functional but not shown in the model selector UI. */
 	hidden?: boolean;
 }
@@ -396,13 +398,12 @@ export const SETTINGS_SCHEMA = {
 	},
 	"advisor.subagents": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "model",
 			group: "Advisor",
 			label: "Advisor for Subagents",
 			description: "Also enable the advisor on spawned task/eval subagents.",
-			condition: "advisorEnabled",
 		},
 	},
 	"advisor.syncBacklog": {
@@ -415,7 +416,7 @@ export const SETTINGS_SCHEMA = {
 			label: "Advisor Sync Backlog",
 			description:
 				"Pause the main agent for up to 30 seconds if the advisor falls behind by this many turns. Off disables catch-up delays.",
-			condition: "advisorEnabled",
+			condition: "advisorAnyEnabled",
 		},
 	},
 	"advisor.immuneTurns": {
@@ -435,7 +436,7 @@ export const SETTINGS_SCHEMA = {
 				{ value: "4", label: "4 turns" },
 				{ value: "5", label: "5 turns" },
 			],
-			condition: "advisorEnabled",
+			condition: "advisorAnyEnabled",
 		},
 	},
 	shellPath: { type: "string", default: undefined },
@@ -1222,7 +1223,7 @@ export const SETTINGS_SCHEMA = {
 			description:
 				"Service Tier for the advisor model. None = standard processing; Inherit = match the main agent's live tier; pick a value (e.g. Priority) to run the advisor on a faster serving path.",
 			options: SERVICE_TIER_INHERIT_OPTIONS,
-			condition: "advisorEnabled",
+			condition: "advisorAnyEnabled",
 		},
 	},
 
@@ -1770,15 +1771,22 @@ export const SETTINGS_SCHEMA = {
 
 	"compaction.strategy": {
 		type: "enum",
-		values: ["context-full", "handoff", "shake", "snapcompact", "off"] as const,
+		values: ["smart", "context-full", "handoff", "shake", "snapcompact", "off"] as const,
 		default: "snapcompact",
 		ui: {
 			tab: "context",
 			group: "Compaction",
 			label: "Compaction Strategy",
 			description:
-				"Choose in-place context-full maintenance, auto-handoff, surgical shake (drop heavy content), snapcompact (archive history as dense images), or disable auto maintenance (off)",
+				"Choose in-place context-full maintenance, auto-handoff, surgical shake" +
+				" (drop heavy content), snapcompact (archive history as dense images), or" +
+				" disable auto maintenance (off)",
 			options: [
+				{
+					value: "smart",
+					label: "Smart",
+					description: "Smart strategy — prefers snapcompact when safe, falls back to context-full",
+				},
 				{
 					value: "context-full",
 					label: "Context-full",
@@ -1802,6 +1810,27 @@ export const SETTINGS_SCHEMA = {
 				},
 			],
 		},
+	},
+
+	"compaction.smartFallback": {
+		type: "boolean",
+		default: true,
+	},
+
+	"compaction.preferSnapcompactWhenSafe": {
+		type: "boolean",
+		default: true,
+	},
+
+	"compaction.overflowStrategy": {
+		type: "enum",
+		values: ["context-full"] as const,
+		default: "context-full",
+	},
+
+	"compaction.emergencyRetryDropOldest": {
+		type: "boolean",
+		default: true,
 	},
 
 	"compaction.thresholdPercent": {
@@ -1846,6 +1875,23 @@ export const SETTINGS_SCHEMA = {
 				{ value: "200000", label: "200K tokens", description: "Full standard context window" },
 				{ value: "300000", label: "300K tokens", description: "Large context window" },
 				{ value: "500000", label: "500K tokens", description: "Very large context window" },
+			],
+		},
+	},
+	"compaction.hardCeilingPercent": {
+		type: "number",
+		default: 95,
+		ui: {
+			tab: "context",
+			group: "Compaction",
+			label: "Hard Context Ceiling",
+			description:
+				"Percent-of-context safety ceiling; provider requests at or above this after maintenance are blocked",
+			options: [
+				{ value: "90", label: "90%", description: "Very conservative safety ceiling" },
+				{ value: "95", label: "95%", description: "Default hard ceiling" },
+				{ value: "97", label: "97%", description: "Near-limit safety ceiling" },
+				{ value: "99", label: "99%", description: "Last-resort safety ceiling" },
 			],
 		},
 	},
@@ -3898,6 +3944,33 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"task.codeWrites": {
+		type: "enum",
+		values: ["normal", "subagent-preferred", "subagent-only"] as const,
+		default: "normal",
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "Code Writes",
+			description:
+				"Control whether production/test/config file writes should be performed by the main agent or delegated to subagents.",
+			options: [
+				{ value: "normal", label: "Normal", description: "No additional code-writing restrictions" },
+				{
+					value: "subagent-preferred",
+					label: "Subagent preferred",
+					description: "Prompt-level preference for delegating code writes to subagents",
+				},
+				{
+					value: "subagent-only",
+					label: "Subagent only",
+					description:
+						"Main agent cannot use edit/write/ast_edit and bash writes are limited to accepting/review evidence paths",
+				},
+			],
+		},
+	},
+
 	"task.maxConcurrency": {
 		type: "number",
 		default: 32,
@@ -4722,6 +4795,170 @@ export const SETTINGS_SCHEMA = {
 
 	"gc.retainNewestPerCwd": { type: "number", default: 10 },
 
+	"superpowers.agents.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Superpowers",
+			label: "Superpowers Agent Bridge",
+			description: "Enable the Superpowers agent bridge for syncing agent wrappers",
+		},
+	},
+
+	"superpowers.agents.target": {
+		type: "enum",
+		values: ["user"] as const,
+		default: "user",
+	},
+
+	"superpowers.agents.overwriteGenerated": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Superpowers",
+			label: "Overwrite Generated",
+			description: "Overwrite existing generated agent wrappers during sync",
+		},
+	},
+
+	"superpowers.codebaseMemoryGate.enabled": {
+		type: "boolean",
+		default: true,
+		description: "Inject codebase-memory graph-first guidance into code-sensitive superpowers skill prompts.",
+	},
+
+	"superpowers.codebaseMemoryGate.mode": {
+		type: "enum",
+		values: ["off", "advisory", "required"] as const,
+		default: "advisory",
+		description:
+			"Controls whether the superpowers codebase-memory gate is disabled, advisory, or required in prompt guidance.",
+	},
+	"superpowers.executionLoop.mode": {
+		type: "enum",
+		values: ["off", "role-bound", "hybrid"] as const,
+		default: "role-bound",
+		description:
+			"Controls the execution loop mode: off (standard flat tasks), role-bound (staged via spec framework), or hybrid (flat tasks with role-bound gates enabled).",
+	},
+	"superpowers.executionLoop.roleBoundExecution.enabled": {
+		type: "boolean",
+		default: true,
+		description: "Enable role-bound PlanRun execution loop.",
+	},
+
+	"superpowers.executionLoop.roleBoundExecution.requirePromptPacks": {
+		type: "boolean",
+		default: true,
+		description: "Require prompt packs for every role-bound stage.",
+	},
+
+	"superpowers.executionLoop.roleBoundExecution.requireAdvisorGate": {
+		type: "boolean",
+		default: true,
+		description: "Require advisor gate evidence for every role-bound stage.",
+	},
+
+	"superpowers.executionLoop.roleBoundExecution.requireModelRoutingEvidence": {
+		type: "boolean",
+		default: true,
+		description: "Require model routing evidence for every role-bound stage.",
+	},
+
+	"superpowers.executionLoop.todo.language": {
+		type: "enum",
+		values: ["zh", "en"] as const,
+		default: "zh",
+		description: "Language for role-bound todo status labels.",
+	},
+
+	"superpowers.executionLoop.todo.showRole": {
+		type: "boolean",
+		default: true,
+		description: "Show role name in role-bound todo snapshots.",
+	},
+
+	"superpowers.executionLoop.todo.showModel": {
+		type: "boolean",
+		default: true,
+		description: "Show model assignment in role-bound todo snapshots.",
+	},
+
+	"superpowers.executionLoop.todo.deriveFromEvidence": {
+		type: "boolean",
+		default: true,
+		description: "Derive todo status from evidence instead of flat task completion.",
+	},
+
+	"superpowers.executionLoop.globalImpactGate.enabled": {
+		type: "boolean",
+		default: true,
+		description: "Enable global impact gate before runtime simulation.",
+	},
+
+	"superpowers.executionLoop.globalImpactGate.mode": {
+		type: "enum",
+		values: ["advisory", "required"] as const,
+		default: "required",
+		description: "Mode for global impact gate.",
+	},
+
+	"superpowers.executionLoop.realBusinessSimulationGate.enabled": {
+		type: "boolean",
+		default: true,
+		description: "Enable real business simulation gate before final acceptance.",
+	},
+
+	"superpowers.executionLoop.realBusinessSimulationGate.mode": {
+		type: "enum",
+		values: ["advisory", "required"] as const,
+		default: "required",
+		description: "Mode for real business simulation gate.",
+	},
+
+	"superpowers.executionLoop.realBusinessSimulationGate.allowedEnvironments": {
+		type: "array",
+		default: ["local", "docker", "sandbox"],
+		description: "Allowed runtime simulation environments.",
+	},
+
+	"superpowers.executionLoop.realBusinessSimulationGate.requireCleanupReport": {
+		type: "boolean",
+		default: true,
+		description: "Require cleanup report before final acceptance.",
+	},
+
+	"superpowers.executionLoop.runtimeScenario.browser.enabled": {
+		type: "boolean",
+		default: false,
+		description: "Enable browser runtime scenario for execution loop.",
+	},
+
+	"superpowers.executionLoop.runtimeScenario.api.enabled": {
+		type: "boolean",
+		default: false,
+		description: "Enable API runtime scenario for execution loop.",
+	},
+
+	"superpowers.executionLoop.runtimeScenario.database.enabled": {
+		type: "boolean",
+		default: false,
+		description: "Enable database runtime scenario for execution loop.",
+	},
+
+	"superpowers.executionLoop.classification.enabled": {
+		type: "boolean",
+		default: true,
+		description: "Enable classification in execution loop.",
+	},
+
+	"superpowers.executionLoop.classification.requireReviewerEvidence": {
+		type: "boolean",
+		default: true,
+		description: "Require reviewer evidence for classification in execution loop.",
+	},
 	"thinkingBudgets.minimal": { type: "number", default: 1024 },
 
 	"thinkingBudgets.low": { type: "number", default: 2048 },
@@ -4818,7 +5055,7 @@ export type Personality = SettingValue<"personality">;
 
 export interface CompactionSettings {
 	enabled: boolean;
-	strategy: "context-full" | "handoff" | "shake" | "snapcompact" | "off";
+	strategy: "smart" | "context-full" | "handoff" | "shake" | "snapcompact" | "off";
 	thresholdPercent: number;
 	thresholdTokens: number;
 	reserveTokens: number;
@@ -4833,6 +5070,10 @@ export interface CompactionSettings {
 	idleTimeoutSeconds: number;
 	supersedeReads: boolean;
 	dropUseless: boolean;
+	smartFallback: boolean;
+	preferSnapcompactWhenSafe: boolean;
+	overflowStrategy: "context-full";
+	emergencyRetryDropOldest: boolean;
 }
 
 export interface ContextPromotionSettings {

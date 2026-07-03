@@ -44,6 +44,18 @@ describe("task schema (single-spawn)", () => {
 			expect("schema" in parsed).toBe(false);
 		}
 	});
+
+	it("accepts modelRole in the single-spawn schema", () => {
+		const parsed = taskSchema({ agent: "explore", assignment: "Work.", modelRole: "developer" });
+		expect(parsed instanceof type.errors).toBe(false);
+	});
+
+	it("does not strip modelRole from the single-spawn schema", () => {
+		const parsed = taskSchema({ agent: "explore", assignment: "Work.", modelRole: "developer" });
+		if (!(parsed instanceof type.errors)) {
+			expect(parsed.modelRole).toBe("developer");
+		}
+	});
 });
 
 describe("task spawn validation", () => {

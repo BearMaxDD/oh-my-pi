@@ -6,6 +6,8 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import chalk from "chalk";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import type { ModelAssignment, ModelVisibilityValue } from "../modes/model-visibility";
+import { formatModelBadge } from "../modes/model-visibility";
 import type { Theme } from "../modes/theme/theme";
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -18,11 +20,18 @@ import { formatErrorDetail, PREVIEW_LIMITS } from "./render-utils";
 // Types
 // =============================================================================
 
-export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";
+export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
 export interface TodoItem {
+	id?: string;
 	content: string;
 	status: TodoStatus;
+	blockers?: string[];
+	modelAssignment?: {
+		executionModel?: ModelAssignment;
+		advisorModel?: ModelVisibilityValue;
+		assignedSubagentId?: string;
+	};
 }
 
 export interface TodoPhase {
@@ -85,11 +94,21 @@ function findPhaseByName(phases: TodoPhase[], name: string): TodoPhase | undefin
 }
 
 function cloneTask(task: TodoItem): TodoItem {
-	return { content: task.content, status: task.status };
+	return {
+		...(task.id !== undefined ? { id: task.id } : {}),
+		content: task.content,
+		status: task.status,
+		...(task.blockers !== undefined ? { blockers: [...task.blockers] } : {}),
+		...(task.modelAssignment !== undefined ? { modelAssignment: task.modelAssignment } : {}),
+	};
 }
 
 function clonePhases(phases: TodoPhase[]): TodoPhase[] {
 	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
+}
+
+function isOpenTodoStatus(status: TodoStatus): boolean {
+	return status === "pending" || status === "in_progress" || status === "blocked";
 }
 
 function todoTransitionKey(phase: string, content: string): string {
@@ -405,6 +424,7 @@ const STATUS_TO_MARKER: Record<TodoStatus, string> = {
 	in_progress: "/",
 	completed: "x",
 	abandoned: "-",
+	blocked: "!",
 };
 
 export function resolveTodoMarkdownPath(input: string, cwd: string): string {
@@ -435,6 +455,7 @@ const MARKER_TO_STATUS: Record<string, TodoStatus> = {
 	">": "in_progress",
 	"-": "abandoned",
 	"~": "abandoned",
+	"!": "blocked",
 };
 
 /** Parse a Markdown checklist back into todo phases. */
@@ -466,7 +487,7 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 			const marker = taskMatch[1];
 			const status = MARKER_TO_STATUS[marker];
 			if (!status) {
-				errors.push(`Line ${lineNum + 1}: unknown status marker "[${marker}]" (use [ ], [x], [/], [-])`);
+				errors.push(`Line ${lineNum + 1}: unknown status marker "[${marker}]" (use [ ], [x], [/], [-], [!])`);
 				continue;
 			}
 			currentPhase.tasks.push({ content: taskMatch[2].trim(), status });
@@ -490,14 +511,12 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 	const remainingByPhase = phases
 		.map(phase => ({
 			name: phase.name,
-			tasks: phase.tasks.filter(task => task.status === "pending" || task.status === "in_progress"),
+			tasks: phase.tasks.filter(task => isOpenTodoStatus(task.status)),
 		}))
 		.filter(phase => phase.tasks.length > 0);
 	const remainingTasks = remainingByPhase.flatMap(phase => phase.tasks.map(task => ({ ...task, phase: phase.name })));
 
-	let currentIdx = phases.findIndex(phase =>
-		phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
-	);
+	let currentIdx = phases.findIndex(phase => phase.tasks.some(task => isOpenTodoStatus(task.status)));
 	if (currentIdx === -1) currentIdx = phases.length - 1;
 	const current = phases[currentIdx];
 	const done = current.tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
@@ -535,7 +554,14 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 		lines.push(`  ${phase.name}:`);
 		for (const task of phase.tasks) {
 			const checkbox = task.status === "completed" ? "[X]" : "[ ]";
-			const tag = task.status === "in_progress" ? " (in progress)" : task.status === "abandoned" ? " (dropped)" : "";
+			const tag =
+				task.status === "in_progress"
+					? " (in progress)"
+					: task.status === "abandoned"
+						? " (dropped)"
+						: task.status === "blocked"
+							? " (blocked)"
+							: "";
 			lines.push(`    - ${checkbox} ${task.content}${tag}`);
 		}
 	}
@@ -733,6 +759,16 @@ function strikeRevealCount(text: string, frame: number | undefined): number | un
 	return Math.ceil((chars.length * revealFrame) / TODO_STRIKE_REVEAL_FRAMES);
 }
 
+export function formatTodoModelBadges(item: TodoItem): string {
+	const assignment = item.modelAssignment;
+	if (!assignment) return "";
+	const badges = [
+		formatModelBadge("task", assignment.executionModel),
+		formatModelBadge("advisor", assignment.advisorModel),
+	].filter((badge): badge is string => Boolean(badge));
+	return badges.length > 0 ? `  ${badges.join("  ")}` : "";
+}
+
 function formatTodoLine(
 	item: TodoItem,
 	uiTheme: Theme,
@@ -741,6 +777,7 @@ function formatTodoLine(
 	frame: number | undefined,
 ): string {
 	const checkbox = uiTheme.checkbox;
+	const modelBadges = formatTodoModelBadges(item);
 	switch (item.status) {
 		case "completed": {
 			const revealCount = completionKeys.has(item.content) ? strikeRevealCount(item.content, frame) : undefined;
@@ -748,14 +785,14 @@ function formatTodoLine(
 				revealCount === undefined
 					? strikethroughText(item.content)
 					: partialStrikethrough(item.content, revealCount);
-			return uiTheme.fg("success", `${prefix}${checkbox.checked} ${content}`);
+			return uiTheme.fg("success", `${prefix}${checkbox.checked} ${content}${modelBadges}`);
 		}
 		case "in_progress":
-			return uiTheme.fg("accent", `${prefix}${checkbox.unchecked} ${item.content}`);
+			return uiTheme.fg("accent", `${prefix}${checkbox.unchecked} ${item.content}${modelBadges}`);
 		case "abandoned":
-			return uiTheme.fg("error", `${prefix}${checkbox.unchecked} ${strikethroughText(item.content)}`);
+			return uiTheme.fg("error", `${prefix}${checkbox.unchecked} ${strikethroughText(item.content)}${modelBadges}`);
 		default:
-			return uiTheme.fg("dim", `${prefix}${checkbox.unchecked} ${item.content}`);
+			return uiTheme.fg("dim", `${prefix}${checkbox.unchecked} ${item.content}${modelBadges}`);
 	}
 }
 

@@ -4,6 +4,8 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
+	markdownToPhases,
+	phasesToMarkdown,
 	resolveTodoMarkdownPath,
 	TODO_STRIKE_HOLD_FRAMES,
 	type TodoPhase,
@@ -92,6 +94,75 @@ describe("TodoTool auto-start behavior", () => {
 			throw new Error("Expected text summary from todo");
 		}
 		expect(completedSummary.text).toContain("Remaining items: none.");
+	});
+});
+
+describe("TodoTool blocked plan-run tasks", () => {
+	it("renders blocked tasks with a stable markdown marker and parses them back", () => {
+		const markdown = phasesToMarkdown([
+			{
+				name: "Repair",
+				tasks: [{ id: "task-7-review", content: "Fix review-blocked todo sync", status: "blocked" }],
+			},
+		]);
+
+		expect(markdown).toContain("- [!] Fix review-blocked todo sync");
+		expect(markdown).not.toContain("[undefined]");
+		expect(markdownToPhases(markdown)).toEqual({
+			phases: [
+				{
+					name: "Repair",
+					tasks: [{ content: "Fix review-blocked todo sync", status: "blocked" }],
+				},
+			],
+			errors: [],
+		});
+	});
+
+	it("preserves plan-run task ids and blockers when viewing session todos", async () => {
+		const tool = new TodoTool(
+			createSession([
+				{
+					name: "Task 7",
+					tasks: [
+						{
+							id: "task-7-code-review",
+							content: "Repair Mill feedback",
+							status: "blocked",
+							blockers: ["STATUS_TO_MARKER missing blocked"],
+						},
+					],
+				},
+			]),
+		);
+
+		const result = await tool.execute("call-1", { op: "view" });
+
+		expect(result.details?.phases[0]?.tasks[0]).toEqual({
+			id: "task-7-code-review",
+			content: "Repair Mill feedback",
+			status: "blocked",
+			blockers: ["STATUS_TO_MARKER missing blocked"],
+		});
+	});
+
+	it("counts blocked tasks as remaining open work in summaries", async () => {
+		const tool = new TodoTool(
+			createSession([
+				{
+					name: "Task 7",
+					tasks: [{ content: "Repair Mill feedback", status: "blocked" }],
+				},
+			]),
+		);
+
+		const result = await tool.execute("call-1", { op: "view" });
+		const summary = result.content.find(part => part.type === "text");
+		if (summary?.type !== "text") throw new Error("Expected text summary");
+		expect(summary.text).toContain("Remaining items (1):");
+		expect(summary.text).toContain("Repair Mill feedback [blocked] (Task 7)");
+		expect(summary.text).toContain("Overall: 0/1 done, 1 open.");
+		expect(summary.text).not.toContain("Remaining items: none.");
 	});
 });
 
@@ -428,6 +499,53 @@ describe("todoToolRenderer.renderResult phase collapsing", () => {
 		});
 		// No empty body line survives between phases.
 		expect(innerLines(component).every(line => line.length > 0)).toBe(true);
+	});
+});
+
+describe("todoToolRenderer.renderResult model badges", () => {
+	it("renders execution and advisor model badges on todo rows", () => {
+		const component = todoToolRenderer.renderResult(
+			{
+				content: [{ type: "text", text: "Todo updated" }],
+				details: {
+					phases: [
+						{
+							name: "Execution",
+							tasks: [
+								{
+									content: "T05 Shard latency metrics",
+									status: "in_progress",
+									modelAssignment: {
+										executionModel: {
+											role: "task",
+											model: "deepseek/deepseek-r1",
+											displayName: "deepseek-r1",
+											source: "modelRoles",
+											scope: "current-run",
+										},
+										advisorModel: {
+											role: "advisor",
+											model: "openai/gpt-5.5",
+											displayName: "gpt-5.5",
+											source: "runtimeOverride",
+											scope: "current-run",
+										},
+									},
+								},
+							],
+						},
+					],
+					storage: "session",
+				},
+			},
+			{ expanded: true, isPartial: false },
+			theme,
+		);
+		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+
+		expect(rendered).toContain("T05 Shard latency metrics");
+		expect(rendered).toContain("task deepseek-r1");
+		expect(rendered).toContain("advisor gpt-5.5*");
 	});
 });
 

@@ -952,7 +952,16 @@ function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
 			runOnSession({ reason: "shutdown", previousSessionFile: undefined }, ctx),
 		);
 		api.on("auto_compaction_start", async (event, ctx) =>
-			runOnSession({ reason: "auto_compaction_start", trigger: event.reason, action: event.action }, ctx),
+			runOnSession(
+				{
+					reason: "auto_compaction_start",
+					trigger: event.reason,
+					action: event.action,
+					selectedAction: event.selectedAction,
+					routeReason: event.routeReason,
+				},
+				ctx,
+			),
 		);
 		api.on("auto_compaction_end", async (event, ctx) =>
 			runOnSession(
@@ -963,6 +972,8 @@ function createCustomToolsExtension(tools: CustomTool[]): ExtensionFactory {
 					aborted: event.aborted,
 					willRetry: event.willRetry,
 					errorMessage: event.errorMessage,
+					selectedAction: event.selectedAction,
+					routeReason: event.routeReason,
 				},
 				ctx,
 			),

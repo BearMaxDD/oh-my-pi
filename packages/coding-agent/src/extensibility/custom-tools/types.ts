@@ -110,11 +110,15 @@ export type CustomToolSessionEvent =
 	| {
 			reason: "auto_compaction_start";
 			trigger: "threshold" | "overflow" | "idle" | "incomplete";
-			action: "context-full" | "handoff" | "shake" | "snapcompact";
+			action: "smart" | "context-full" | "handoff" | "shake" | "snapcompact" | "emergency-context-full";
+			selectedAction?: "snapcompact" | "context-full" | "emergency-context-full";
+			routeReason?: string;
 	  }
 	| {
 			reason: "auto_compaction_end";
-			action: "context-full" | "handoff" | "shake" | "snapcompact";
+			action: "smart" | "context-full" | "handoff" | "shake" | "snapcompact" | "emergency-context-full";
+			selectedAction?: "snapcompact" | "context-full" | "emergency-context-full";
+			routeReason?: string;
 			result: CompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;

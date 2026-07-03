@@ -33,6 +33,7 @@ import type { EventBus } from "../../utils/event-bus";
 import { initializeExtensions } from "../runtime-init";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
+import { buildRpcSessionState } from "./rpc-state";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
 import type {
 	RpcCommand,
@@ -44,7 +45,6 @@ import type {
 	RpcHostUriCancelRequest,
 	RpcHostUriRequest,
 	RpcResponse,
-	RpcSessionState,
 	RpcSubagentSubscriptionLevel,
 } from "./rpc-types";
 
@@ -79,7 +79,10 @@ export type RpcSessionChangeResult =
 
 export type RpcSessionChangeSession = Pick<AgentSession, "newSession" | "switchSession" | "branch">;
 
-export type RpcSkillCommandSession = Pick<AgentSession, "promptCustomMessage" | "skills" | "skillsSettings">;
+export type RpcSkillCommandSession = Pick<
+	AgentSession,
+	"promptCustomMessage" | "skills" | "skillsSettings" | "settings"
+>;
 export type RpcSkillCommandResult = { agentInvoked: true };
 
 export async function tryRunRpcSkillCommand(
@@ -94,7 +97,12 @@ export async function tryRunRpcSkillCommand(
 	const skillName = commandName.slice("skill:".length);
 	const skill = session.skills.find(candidate => candidate.name === skillName);
 	if (!skill) return false;
-	const built = await buildSkillPromptMessage(skill, args);
+	const built = await buildSkillPromptMessage(skill, args, {
+		codebaseMemoryGate: {
+			enabled: session.settings.get("superpowers.codebaseMemoryGate.enabled") as boolean,
+			mode: session.settings.get("superpowers.codebaseMemoryGate.mode") as "off" | "advisory" | "required",
+		},
+	});
 	await session.promptCustomMessage({
 		customType: SKILL_PROMPT_MESSAGE_TYPE,
 		content: built.message,
@@ -776,30 +784,9 @@ export async function runRpcMode(
 			// =================================================================
 
 			case "get_state": {
-				const state: RpcSessionState = {
-					model: session.model,
-					thinkingLevel: session.thinkingLevel,
-					isStreaming: session.isStreaming,
-					isCompacting: session.isCompacting,
-					steeringMode: session.steeringMode,
-					followUpMode: session.followUpMode,
-					interruptMode: session.interruptMode,
-					sessionFile: session.sessionFile,
-					sessionId: session.sessionId,
-					sessionName: session.sessionName,
-					autoCompactionEnabled: session.autoCompactionEnabled,
-					messageCount: session.messages.length,
-					queuedMessageCount: session.queuedMessageCount,
-					todoPhases: session.getTodoPhases(),
-					systemPrompt: session.systemPrompt,
-					dumpTools: session.agent.state.tools.map(tool => ({
-						name: tool.name,
-						description: tool.description,
-						parameters: isZodSchema(tool.parameters) ? zodToWireSchema(tool.parameters) : tool.parameters,
-						examples: tool.examples,
-					})),
-					contextUsage: session.getContextUsage(),
-				};
+				const state = buildRpcSessionState(session, parameters =>
+					isZodSchema(parameters) ? zodToWireSchema(parameters) : parameters,
+				);
 				return success(id, "get_state", state);
 			}
 

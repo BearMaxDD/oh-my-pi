@@ -20,6 +20,8 @@ export const BUILTIN_TOOL_NAMES = [
 	"job",
 	"irc",
 	"todo",
+	"plan_execution_book",
+	"plan_repair_loop",
 	"web_search",
 	"search_tool_bm25",
 	"write",

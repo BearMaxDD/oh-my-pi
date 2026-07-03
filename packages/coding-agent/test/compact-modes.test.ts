@@ -63,4 +63,10 @@ describe("parseCompactArgs", () => {
 		// Bare snapcompact is fine.
 		expect(parseCompactArgs("snapcompact")).toEqual({ mode: "snapcompact" });
 	});
+
+	it("keeps bare /compact distinct from explicit snapcompact mode", () => {
+		expect(parseCompactArgs("")).toEqual({});
+		expect(parseCompactArgs("snapcompact")).toEqual({ mode: "snapcompact" });
+		expect(parseCompactArgs("中文压缩重点")).toEqual({ instructions: "中文压缩重点" });
+	});
 });

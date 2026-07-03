@@ -1213,30 +1213,34 @@ export async function resolveModelOverrideWithAuthFallback(
 	thinkingLevel?: ThinkingLevel;
 	explicitThinkingLevel: boolean;
 	authFallbackUsed: boolean;
+	/** The original model pattern(s) requested before fallback resolution. */
+	requestedModel?: string;
+	/** Alias for authFallbackUsed. */
+	fallbackUsed: boolean;
 }> {
 	const primary = resolveModelOverride(modelPatterns, modelRegistry, settings);
 	if (!primary.model || !parentActiveModelPattern) {
-		return { ...primary, authFallbackUsed: false };
+		return { ...primary, authFallbackUsed: false, requestedModel: modelPatterns?.[0], fallbackUsed: false };
 	}
 
 	const primaryKey = await modelRegistry.getApiKey(primary.model);
 	if (primaryKey === kNoAuth || isAuthenticated(primaryKey)) {
-		return { ...primary, authFallbackUsed: false };
+		return { ...primary, authFallbackUsed: false, requestedModel: modelPatterns?.[0], fallbackUsed: false };
 	}
 
 	const fallback = resolveModelOverride([parentActiveModelPattern], modelRegistry, settings);
 	if (!fallback.model) {
-		return { ...primary, authFallbackUsed: false };
+		return { ...primary, authFallbackUsed: false, requestedModel: modelPatterns?.[0], fallbackUsed: false };
 	}
 	if (modelsAreEqual(fallback.model, primary.model)) {
-		return { ...primary, authFallbackUsed: false };
+		return { ...primary, authFallbackUsed: false, requestedModel: modelPatterns?.[0], fallbackUsed: false };
 	}
 	const fallbackKey = await modelRegistry.getApiKey(fallback.model);
 	if (!isAuthenticated(fallbackKey)) {
-		return { ...primary, authFallbackUsed: false };
+		return { ...primary, authFallbackUsed: false, requestedModel: modelPatterns?.[0], fallbackUsed: false };
 	}
 
-	return { ...fallback, authFallbackUsed: true };
+	return { ...fallback, authFallbackUsed: true, requestedModel: modelPatterns?.[0], fallbackUsed: true };
 }
 
 /**

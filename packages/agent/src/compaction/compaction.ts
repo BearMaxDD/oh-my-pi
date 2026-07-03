@@ -146,15 +146,20 @@ export interface CompactionResult<T = unknown> {
 
 export interface CompactionSettings {
 	enabled: boolean;
-	strategy?: "context-full" | "handoff" | "shake" | "snapcompact" | "off";
+	strategy?: "smart" | "context-full" | "handoff" | "shake" | "snapcompact" | "off";
 	thresholdPercent?: number;
 	thresholdTokens?: number;
+	hardCeilingPercent?: number;
 	midTurnEnabled?: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
 	autoContinue?: boolean;
 	remoteEnabled?: boolean;
 	remoteEndpoint?: string;
+	smartFallback?: boolean;
+	preferSnapcompactWhenSafe?: boolean;
+	overflowStrategy?: "context-full";
+	emergencyRetryDropOldest?: boolean;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
@@ -162,6 +167,7 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	strategy: "context-full",
 	thresholdPercent: -1,
 	thresholdTokens: -1,
+	hardCeilingPercent: 95,
 	midTurnEnabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
@@ -231,6 +237,24 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 	if (!settings.enabled || settings.strategy === "off" || contextWindow <= 0) return false;
 	const thresholdTokens = resolveThresholdTokens(contextWindow, settings);
 	return contextTokens > thresholdTokens;
+}
+
+export function resolveHardCeilingTokens(contextWindow: number, settings: CompactionSettings): number {
+	const hardCeilingPercent = settings.hardCeilingPercent ?? 95;
+	if (typeof hardCeilingPercent !== "number" || !Number.isFinite(hardCeilingPercent) || hardCeilingPercent <= 0) {
+		return Math.floor(contextWindow * 0.95);
+	}
+	const clampedHardCeilingPercent = Math.min(99, Math.max(1, hardCeilingPercent));
+	return Math.floor(contextWindow * (clampedHardCeilingPercent / 100));
+}
+
+export function exceedsHardContextCeiling(
+	contextTokens: number,
+	contextWindow: number,
+	settings: CompactionSettings,
+): boolean {
+	if (!settings.enabled || settings.strategy === "off" || contextWindow <= 0) return false;
+	return contextTokens >= resolveHardCeilingTokens(contextWindow, settings);
 }
 
 /**

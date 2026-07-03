@@ -240,6 +240,39 @@ describe("runSubprocess yield reminders", () => {
 		expect(userPrompt).not.toMatch(/CONTEXT\n=+/);
 	});
 
+	it("adds required skill and TDD gate reminders to task-card assignments", async () => {
+		let userPrompt = "";
+		const session = createMockSession(({ text, emit }) => {
+			userPrompt = text;
+			emit({
+				type: "tool_execution_end",
+				toolCallId: "tool-task-card-reminders",
+				toolName: "yield",
+				result: {
+					content: [{ type: "text", text: "Result submitted." }],
+					details: { status: "success", data: { ok: true } },
+				},
+				isError: false,
+			});
+		});
+
+		mockCreateAgentSession(session);
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "subagent-task-card-reminders",
+			task: "Complete the assignment below, thoroughly:\n\nPatch the todo sync.",
+			requiredSkillEvidence: ["test-driven-development", "verification-before-completion"],
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(userPrompt).toContain("Required skills for this task:");
+		expect(userPrompt).toContain("- test-driven-development");
+		expect(userPrompt).toContain("- verification-before-completion");
+		expect(userPrompt).toContain("Follow TDD order: RED_EVIDENCE, GREEN_EVIDENCE, REGRESSION_EVIDENCE.");
+		expect(userPrompt).toContain("Patch the todo sync.");
+	});
+
 	it("sends reminder prompt when subagent stops without yield", async () => {
 		const prompts: string[] = [];
 		const promptOptions: Array<PromptOptions | undefined> = [];

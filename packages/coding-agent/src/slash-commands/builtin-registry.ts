@@ -248,6 +248,26 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "plan-run",
+		description: "Start an autonomous Plan Execution Book run from the current request.",
+		inlineHint: "<request>",
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const request = command.args.trim();
+			if (!request) {
+				return usage("Usage: /plan-run <request>", runtime);
+			}
+			await runtime.output("Autonomous plan run request queued.");
+			return {
+				prompt: [
+					`Create an autonomous plan run for this request using plan_execution_book: ${request}`,
+					"When any task review or main acceptance review fails, call plan_repair_loop before spawning repair subagents.",
+					"Do not re-run writing-plans unless plan_repair_loop returns PLAN_DEFECT_REPLAN_REQUIRED.",
+				].join("\n"),
+			};
+		},
+	},
+	{
 		name: "plan-review",
 		description: "Re-open the plan review for the latest plan (plan mode only)",
 		getTuiAutocompleteDescription: runtime =>

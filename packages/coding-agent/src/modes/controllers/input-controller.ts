@@ -1699,8 +1699,7 @@ export class InputController {
 				return;
 			}
 
-			this.ctx.statusLine.invalidate();
-			this.ctx.updateEditorBorderColor();
+			this.ctx.refreshMainModelUi();
 			// The status line already reports the resolved model + thinking level, so
 			// the cycle status is just a status-line-style chip track (active role
 			// filled), matching the plan-approval model slider. It renders into its

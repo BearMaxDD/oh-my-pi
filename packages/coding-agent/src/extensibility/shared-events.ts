@@ -216,13 +216,17 @@ export interface TurnEndEvent {
 export interface AutoCompactionStartEvent {
 	type: "auto_compaction_start";
 	reason: "threshold" | "overflow" | "idle" | "incomplete";
-	action: "context-full" | "handoff" | "shake" | "snapcompact";
+	action: "smart" | "context-full" | "handoff" | "shake" | "snapcompact" | "emergency-context-full";
+	selectedAction?: "snapcompact" | "context-full" | "emergency-context-full";
+	routeReason?: string;
 }
 
 /** Fired when auto-compaction ends */
 export interface AutoCompactionEndEvent {
 	type: "auto_compaction_end";
-	action: "context-full" | "handoff" | "shake" | "snapcompact";
+	action: "smart" | "context-full" | "handoff" | "shake" | "snapcompact" | "emergency-context-full";
+	selectedAction?: "snapcompact" | "context-full" | "emergency-context-full";
+	routeReason?: string;
 	result: CompactionResult | undefined;
 	aborted: boolean;
 	willRetry: boolean;

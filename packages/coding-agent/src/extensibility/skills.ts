@@ -12,6 +12,11 @@ import type { SkillsSettings } from "../config/settings";
 import { type Skill as CapabilitySkill, loadCapability } from "../discovery";
 import { compareSkillOrder, scanSkillsFromDir } from "../discovery/helpers";
 import type { SkillPromptDetails } from "../session/messages";
+import {
+	resolveSuperpowersCodebaseMemoryGate,
+	type SuperpowersCodebaseMemoryGateMode,
+	type SuperpowersCodebaseMemoryStatus,
+} from "../superpowers/codebase-memory-gate";
 import { expandTilde } from "../tools/path-utils";
 export interface Skill {
 	name: string;
@@ -380,6 +385,14 @@ export interface BuiltSkillPromptMessage {
 	details: SkillPromptDetails;
 }
 
+export interface BuildSkillPromptMessageOptions {
+	codebaseMemoryGate?: {
+		enabled?: boolean;
+		mode?: SuperpowersCodebaseMemoryGateMode;
+		status?: SuperpowersCodebaseMemoryStatus;
+	};
+}
+
 export function getSkillSlashCommandName(skill: Pick<Skill, "name">): string {
 	return `skill:${skill.name}`;
 }
@@ -387,14 +400,28 @@ export function getSkillSlashCommandName(skill: Pick<Skill, "name">): string {
 export async function buildSkillPromptMessage(
 	skill: Pick<Skill, "name" | "filePath">,
 	args: string,
+	options: BuildSkillPromptMessageOptions = {},
 ): Promise<BuiltSkillPromptMessage> {
 	const content = await Bun.file(skill.filePath).text();
-	const body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+	let body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
 	const metaLines = [`Skill: ${skill.filePath}`];
 	const trimmedArgs = args.trim();
 	if (trimmedArgs) {
 		metaLines.push(`User: ${trimmedArgs}`);
 	}
+
+	const gateOptions = options.codebaseMemoryGate ?? {};
+	const gate = resolveSuperpowersCodebaseMemoryGate({
+		skillName: skill.name,
+		userPrompt: `${body}\n${trimmedArgs}`,
+		enabled: gateOptions.enabled,
+		mode: gateOptions.mode,
+		status: gateOptions.status,
+	});
+	if (gate.contextMessage) {
+		body = `${body}\n\n${gate.contextMessage}`;
+	}
+
 	const message = `${body}\n\n---\n\n${metaLines.join("\n")}`;
 	return {
 		message,

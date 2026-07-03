@@ -5,6 +5,7 @@ import type { AssistantMessage, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai"
 import { type Component, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
+import { buildPlanRunPanelViewModel, renderPlanRunPanelText } from "../../../codex-plan-run/plan-run-panel-model";
 import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
@@ -240,6 +241,7 @@ export class StatusLineComponent implements Component {
 	// count (matching the provider and the `/context` panel), so a stable
 	// message list + model window yields a stable result we can return verbatim.
 	#contextUsageCache: ContextUsageMemo | undefined;
+	#planRunPanelText: string | undefined = undefined;
 
 	constructor(private session: AgentSession) {
 		this.#settings = {
@@ -335,6 +337,10 @@ export class StatusLineComponent implements Component {
 
 	setCollabStatus(status: CollabStatus | null): void {
 		this.#collabStatus = status;
+	}
+
+	setPlanRunPanelText(text: string | undefined): void {
+		this.#planRunPanelText = text;
 	}
 
 	setHookStatus(key: string, text: string | undefined): void {
@@ -1112,18 +1118,35 @@ export class StatusLineComponent implements Component {
 			width: visibleWidth(content),
 		};
 	}
+	#resolvePlanRunPanelText(): string | undefined {
+		if (this.#planRunPanelText) return this.#planRunPanelText;
+		const snapshot = this.session.getPlanRunSnapshot?.();
+		if (!snapshot) return undefined;
+		const rendered = renderPlanRunPanelText(buildPlanRunPanelViewModel(snapshot.panel ?? snapshot));
+		return rendered || undefined;
+	}
 
 	render(width: number): readonly string[] {
-		// Only render hook statuses - main status is in editor's top border
+		// Hook status line(s)
 		const showHooks = this.#settings.showHookStatus ?? true;
-		if (!showHooks || this.#hookStatuses.size === 0) {
-			return [];
+		const lines: string[] = [];
+		if (showHooks && this.#hookStatuses.size > 0) {
+			const sortedStatuses = Array.from(this.#hookStatuses.entries())
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([, text]) => sanitizeStatusText(text));
+			const hookLine = sortedStatuses.join(" ");
+			if (hookLine) lines.push(truncateToWidth(hookLine, width));
 		}
 
-		const sortedStatuses = Array.from(this.#hookStatuses.entries())
-			.sort(([a], [b]) => a.localeCompare(b))
-			.map(([, text]) => sanitizeStatusText(text));
-		const hookLine = sortedStatuses.join(" ");
-		return [truncateToWidth(hookLine, width)];
+		// PlanRun panel text lines (rendered below hook statuses when set)
+		const planRunPanelText = this.#resolvePlanRunPanelText();
+		if (planRunPanelText) {
+			const panelLines = planRunPanelText.split("\n");
+			for (const panelLine of panelLines) {
+				if (panelLine) lines.push(truncateToWidth(panelLine, width));
+			}
+		}
+
+		return lines;
 	}
 }

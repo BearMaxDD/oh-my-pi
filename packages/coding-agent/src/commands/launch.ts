@@ -158,6 +158,12 @@ export default class Index extends Command {
 			options: ["always-ask", "write", "yolo"],
 			description: "Override tools.approvalMode for this session (always-ask|write|yolo)",
 		}),
+		// `--code-writes`: declared here for --help and shell completions; runtime parsing
+		// happens in `cli/args.ts parseArgs` and is applied as `Settings.override("task.codeWrites", …)`.
+		"code-writes": Flags.string({
+			options: ["normal", "subagent-preferred", "subagent-only"],
+			description: "Control code-writing policy for this session (normal|subagent-preferred|subagent-only)",
+		}),
 	};
 
 	static examples = [

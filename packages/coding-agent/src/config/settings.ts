@@ -584,6 +584,14 @@ export class Settings {
 	}
 
 	/**
+	 * Get a runtime override for a model role without falling back to persisted roles.
+	 */
+	getModelRoleOverride(role: ModelRole | string): string | undefined {
+		const overrides = shallowStringRecord(getByPath(this.#overrides, ["modelRoles"]));
+		return overrides[role];
+	}
+
+	/**
 	 * Get all model roles (helper for modelRoles record).
 	 */
 	getModelRoles(): ReadOnlyDict<string> {

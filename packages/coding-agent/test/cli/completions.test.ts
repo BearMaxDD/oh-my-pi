@@ -206,13 +206,22 @@ describe("omp completions (integration / drift)", () => {
 		// Real top-level flags from launch's static `flags` table. Flags with a
 		// short char render as `{-r,--resume}`, so only assert the bracket form for
 		// the long-only ones and check the char-paired form separately.
-		for (const flag of ["--model", "--thinking", "--mode", "--approval-mode", "--tools", "--no-tools"]) {
+		for (const flag of [
+			"--model",
+			"--thinking",
+			"--mode",
+			"--approval-mode",
+			"--code-writes",
+			"--tools",
+			"--no-tools",
+		]) {
 			expect(stdout).toContain(`${flag}[`);
 		}
 		expect(stdout).toContain("{-r,--resume}");
 		// Real enum option sets flow through unchanged.
 		expect(stdout).toContain(":value:(off minimal low medium high xhigh auto)");
 		expect(stdout).toContain(":value:(always-ask write yolo)");
+		expect(stdout).toContain(":value:(normal subagent-preferred subagent-only)");
 		// Real subcommands present; dynamic callbacks wired.
 		expect(stdout).toContain("_omp_cmd_commit");
 		expect(stdout).toContain("'completions:");

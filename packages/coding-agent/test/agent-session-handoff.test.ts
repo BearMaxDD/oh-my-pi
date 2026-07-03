@@ -399,7 +399,7 @@ describe("AgentSession handoff", () => {
 		expect(compactSpy).not.toHaveBeenCalled();
 	});
 
-	it("does not call the LLM summarizer when auto snapcompact preflight fails", async () => {
+	it("falls back to the LLM summarizer when auto snapcompact preflight fails", async () => {
 		session.settings.set("compaction.strategy", "snapcompact");
 		const entries = sessionManager.getBranch();
 		const lastEntryId = entries[entries.length - 1]?.id;
@@ -417,21 +417,30 @@ describe("AgentSession handoff", () => {
 			settings: { ...compactionModule.DEFAULT_COMPACTION_SETTINGS, strategy: "snapcompact" },
 		};
 		vi.spyOn(compactionModule, "prepareCompaction").mockReturnValue(fixedPreparation);
-		const compactSpy = vi.spyOn(compactionModule, "compact").mockRejectedValue(new Error("429 quota exhausted"));
+		const compactSpy = vi.spyOn(compactionModule, "compact").mockResolvedValue({
+			summary: "context full summary",
+			shortSummary: "context full",
+			firstKeptEntryId: lastEntryId,
+			tokensBefore: 100,
+			details: { source: "mock-llm" },
+		});
 
 		await session.runIdleCompaction();
+		expect(compactSpy).toHaveBeenCalledTimes(1);
 
 		const endEvent = events.find(
 			(event): event is Extract<AgentSessionEvent, { type: "auto_compaction_end" }> =>
 				event.type === "auto_compaction_end",
 		);
-		expect(compactSpy).not.toHaveBeenCalled();
 		expect(events).toContainEqual({ type: "auto_compaction_start", reason: "idle", action: "snapcompact" });
 		expect(endEvent).toMatchObject({
 			type: "auto_compaction_end",
-			action: "snapcompact",
-			errorMessage: expect.stringContaining("snapcompact cannot render this conversation locally"),
+			action: "context-full",
+			selectedAction: "context-full",
+			routeReason: "high_non_ascii",
+			aborted: false,
 		});
+		expect(JSON.stringify(events)).not.toContain("No LLM fallback was attempted");
 	});
 
 	it("strips hook-supplied snapcompact data when persisting context-full compaction", async () => {
@@ -837,6 +846,60 @@ describe("AgentSession handoff", () => {
 		// deflated 1k provider count no longer suppresses compaction.
 		expect(compactSpy).toHaveBeenCalled();
 	});
+
+	it("blocks the provider request when pre-prompt maintenance cannot lower a pending prompt below the hard ceiling", async () => {
+		await session.dispose();
+		authStorage.setRuntimeApiKey("openai", "test-key");
+		sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
+		events = [];
+
+		const mock = createMockModel({
+			id: "gpt-5.5",
+			provider: "openai",
+			contextWindow: 10_000,
+			responses: [{ content: ["should not be called"], stopReason: "stop" }],
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model: mock,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: mock.stream,
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settings: Settings.isolated({
+				"compaction.enabled": true,
+				"compaction.autoContinue": false,
+				"compaction.strategy": "context-full",
+				"compaction.thresholdPercent": 80,
+				"compaction.thresholdTokens": -1,
+				"compaction.keepRecentTokens": 1,
+				"contextPromotion.enabled": false,
+			}),
+			modelRegistry,
+		});
+		session.subscribe(event => {
+			events.push(event);
+		});
+		vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "pre-prompt compacted but pending prompt is still huge",
+			shortSummary: undefined,
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+		}));
+
+		await session.prompt("oversized pending prompt ".repeat(12_000));
+		await drainMaintenance();
+
+		expect(events).toContainEqual({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
+		expect(mock.calls).toHaveLength(0);
+	});
 	it("counts current non-message token growth in provider-anchored pre-prompt checks", async () => {
 		await session.dispose();
 		authStorage.setRuntimeApiKey("openai", "test-key");
@@ -854,7 +917,7 @@ describe("AgentSession handoff", () => {
 		const emitBeforeAgentStart = vi
 			.spyOn(extensionRunner, "emitBeforeAgentStart")
 			.mockResolvedValueOnce(undefined)
-			.mockResolvedValueOnce({ systemPrompt: ["expanded system prompt ".repeat(30_000)] });
+			.mockResolvedValueOnce({ systemPrompt: ["expanded system prompt ".repeat(800)] });
 		vi.spyOn(extensionRunner, "emit").mockResolvedValue(undefined);
 
 		const mock = createMockModel({
@@ -893,7 +956,7 @@ describe("AgentSession handoff", () => {
 				"compaction.enabled": true,
 				"compaction.autoContinue": false,
 				"compaction.strategy": "context-full",
-				"compaction.thresholdTokens": 8_000,
+				"compaction.thresholdTokens": 4_000,
 				"compaction.keepRecentTokens": 1,
 				"contextPromotion.enabled": false,
 			}),

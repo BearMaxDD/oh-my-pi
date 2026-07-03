@@ -1,6 +1,7 @@
 import type { AgentProgress, SubagentLifecyclePayload, SubagentProgressPayload } from "../task";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL } from "../task";
 import type { EventBus } from "../utils/event-bus";
+import type { ModelAssignment, ModelVisibilityValue } from "./model-visibility";
 
 export interface ObservableSession {
 	id: string;
@@ -22,6 +23,10 @@ export interface ObservableSession {
 	lastUpdate: number;
 	/** Latest progress snapshot from the subagent executor */
 	progress?: AgentProgress;
+	modelAssignment?: {
+		executionModel?: ModelAssignment;
+		advisorModel?: ModelVisibilityValue;
+	};
 }
 
 const STATUS_MAP: Record<string, ObservableSession["status"]> = {
@@ -30,6 +35,14 @@ const STATUS_MAP: Record<string, ObservableSession["status"]> = {
 	failed: "failed",
 	aborted: "aborted",
 };
+
+function applyAdvisorModelAssignment(session: ObservableSession, advisorModel: ModelAssignment | undefined): void {
+	if (!advisorModel) return;
+	session.modelAssignment = {
+		...session.modelAssignment,
+		advisorModel,
+	};
+}
 
 export class SessionObserverRegistry {
 	#sessions = new Map<string, ObservableSession>();
@@ -156,8 +169,9 @@ export class SessionObserverRegistry {
 					existing.detached = payload.detached ?? existing.detached;
 					if (payload.description) existing.description = payload.description;
 					if (payload.sessionFile) existing.sessionFile = payload.sessionFile;
+					applyAdvisorModelAssignment(existing, payload.advisorModel);
 				} else {
-					this.#sessions.set(payload.id, {
+					const session: ObservableSession = {
 						id: payload.id,
 						kind: "subagent",
 						label: payload.description ?? `Subagent #${payload.index}`,
@@ -169,7 +183,9 @@ export class SessionObserverRegistry {
 						detached: payload.detached,
 						index: payload.index,
 						lastUpdate: Date.now(),
-					});
+					};
+					applyAdvisorModelAssignment(session, payload.advisorModel);
+					this.#sessions.set(payload.id, session);
 				}
 				this.#notifyListeners();
 			}),
@@ -192,8 +208,9 @@ export class SessionObserverRegistry {
 					existing.progress = progress;
 					if (progress.description) existing.description = progress.description;
 					if (payload.sessionFile) existing.sessionFile = payload.sessionFile;
+					applyAdvisorModelAssignment(existing, progress.advisorModel ?? payload.advisorModel);
 				} else {
-					this.#sessions.set(id, {
+					const session: ObservableSession = {
 						id,
 						kind: "subagent",
 						label: progress.description ?? `Subagent #${payload.index}`,
@@ -206,7 +223,9 @@ export class SessionObserverRegistry {
 						index: payload.index,
 						lastUpdate: Date.now(),
 						progress,
-					});
+					};
+					applyAdvisorModelAssignment(session, progress.advisorModel ?? payload.advisorModel);
+					this.#sessions.set(id, session);
 				}
 				this.#notifyListeners();
 			}),

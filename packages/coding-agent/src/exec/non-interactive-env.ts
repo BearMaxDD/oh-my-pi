@@ -17,6 +17,8 @@ export const NON_INTERACTIVE_ENV: Readonly<Record<string, string>> = {
 	TERM: "dumb",
 	GPG_TTY: "not a tty",
 	NO_COLOR: "1",
+	// Disable macOS zsh shell-session save/restore banners in non-interactive captures.
+	SHELL_SESSIONS_DISABLE: "1",
 	PYTHONUNBUFFERED: "1",
 	// Disable editor and terminal credential prompts.
 	GIT_EDITOR: "true",

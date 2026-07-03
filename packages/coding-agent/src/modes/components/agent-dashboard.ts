@@ -47,6 +47,8 @@ import { Settings } from "../../config/settings";
 import agentCreationArchitectPrompt from "../../prompts/system/agent-creation-architect.md" with { type: "text" };
 import agentCreationUserPrompt from "../../prompts/system/agent-creation-user.md" with { type: "text" };
 import { createAgentSession } from "../../sdk";
+import type { SuperpowersAgentSyncResult } from "../../superpowers/agent-bridge";
+import { syncSuperpowersAgents } from "../../superpowers/agent-bridge";
 import { discoverAgents } from "../../task/discovery";
 import type { AgentDefinition, AgentSource } from "../../task/types";
 import { shortenPath } from "../../tools/render-utils";
@@ -90,6 +92,7 @@ interface AgentDashboardModelContext {
 	modelRegistry?: ModelRegistry;
 	activeModelPattern?: string;
 	defaultModelPattern?: string;
+	syncSuperpowersAgentsForDashboard?: (options?: { force?: boolean }) => Promise<SuperpowersAgentSyncResult>;
 }
 
 const SOURCE_ORDER: Record<AgentSource, number> = {
@@ -105,7 +108,7 @@ const SOURCE_LABEL: Record<AgentSource, string> = {
 };
 
 const LIST_FOOTER =
-	" ↑/↓: navigate  Space: toggle  Enter: model override  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close";
+	" ↑/↓: navigate  Space: toggle  Enter: model override  N: new agent  ←/→: source  S: sync superpowers  Ctrl+R: reload  Esc: close";
 
 const IDENTIFIER_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+){1,5}$/;
 function joinPatterns(patterns: string[]): string {
@@ -370,6 +373,8 @@ export class AgentDashboard extends Container {
 	#createError: string | null = null;
 	#createStreamingText = "";
 
+	#syncSuperpowersAgentsForDashboard: (options?: { force?: boolean }) => Promise<SuperpowersAgentSyncResult>;
+
 	onClose?: () => void;
 	onRequestRender?: () => void;
 
@@ -380,6 +385,8 @@ export class AgentDashboard extends Container {
 		private readonly modelContext: AgentDashboardModelContext,
 	) {
 		super();
+		this.#syncSuperpowersAgentsForDashboard =
+			modelContext.syncSuperpowersAgentsForDashboard ?? this.#defaultSyncSuperpowersAgents.bind(this);
 	}
 
 	static async create(
@@ -396,9 +403,33 @@ export class AgentDashboard extends Container {
 	async #init(): Promise<void> {
 		this.#settingsManager = this.settings ?? (await Settings.init());
 		await this.#reloadData();
-		this.#buildLayout();
 	}
 
+	#defaultSyncSuperpowersAgents(options?: { force?: boolean }): Promise<SuperpowersAgentSyncResult> {
+		const [userDir] = getConfigDirs("agents", { project: false });
+		if (!userDir) {
+			throw new Error("No user agents config directory is available.");
+		}
+		return syncSuperpowersAgents({ targetDir: userDir.path, force: options?.force });
+	}
+
+	async #syncSuperpowersAgents(): Promise<void> {
+		if (this.#settingsManager?.get("superpowers.agents.enabled") === false) {
+			this.#notice = "Superpowers agent bridge is disabled";
+			this.#loadError = null;
+			this.#rebuildAndRender();
+			return;
+		}
+		try {
+			const force = this.#settingsManager?.get("superpowers.agents.overwriteGenerated") !== false;
+			const result = await this.#syncSuperpowersAgentsForDashboard({ force });
+			this.#notice = `Superpowers agents synced: ${result.written.length} written, ${result.updated.length} updated, ${result.conflicts.length} conflicts`;
+			await this.#reloadData();
+		} catch (error) {
+			this.#loadError = error instanceof Error ? error.message : String(error);
+			this.#rebuildAndRender();
+		}
+	}
 	async #reloadData(): Promise<void> {
 		this.#loading = true;
 		this.#loadError = null;
@@ -1157,6 +1188,10 @@ export class AgentDashboard extends Container {
 		}
 		if (matchesKey(data, "enter") || matchesKey(data, "return") || data === "\n") {
 			this.#beginModelEdit();
+			return;
+		}
+		if (data === "S" && this.#searchQuery.length === 0) {
+			void this.#syncSuperpowersAgents();
 			return;
 		}
 		if (data.toLowerCase() === "n") {

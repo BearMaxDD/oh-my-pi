@@ -168,6 +168,33 @@ describe("createTools", () => {
 		expect(names).toEqual(["read", "write", "resolve"]);
 	});
 
+	it("filters write-capable tools from the main agent when code writes are subagent-only", async () => {
+		const settings = createSettingsWithOverrides({
+			"task.codeWrites": "subagent-only",
+		} as Partial<Record<SettingPath, unknown>>);
+		const session = createTestSession({ settings, taskDepth: 0 });
+		const tools = await createTools(session, ["read", "edit", "write", "ast_edit", "task"]);
+		const names = tools.map(t => t.name);
+
+		expect(names).toContain("read");
+		expect(names).toContain("task");
+		expect(names).not.toContain("edit");
+		expect(names).not.toContain("write");
+		expect(names).not.toContain("ast_edit");
+	});
+
+	it("keeps write-capable tools available to subagents when code writes are subagent-only", async () => {
+		const settings = createSettingsWithOverrides({
+			"astEdit.enabled": true,
+			"task.codeWrites": "subagent-only",
+		} as Partial<Record<SettingPath, unknown>>);
+		const session = createTestSession({ settings, taskDepth: 1 });
+		const tools = await createTools(session, ["read", "edit", "write", "ast_edit"]);
+		const names = tools.map(t => t.name);
+
+		expect(names).toEqual(["read", "edit", "write", "ast_edit", "resolve"]);
+	});
+
 	it("lowercases requested tool subset", async () => {
 		const session = createTestSession();
 		const tools = await createTools(session, ["Read", "Write"]);

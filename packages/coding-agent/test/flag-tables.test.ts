@@ -76,6 +76,20 @@ describe("OPTIONAL_FLAGS per-flag quirks", () => {
 	});
 });
 
+describe("parseArgs --code-writes flag", () => {
+	it("sets the task code-write policy", () => {
+		const result = parseArgs(["--code-writes", "subagent-only", "implement the plan"]);
+		expect(result.codeWrites).toBe("subagent-only");
+		expect(result.messages).toEqual(["implement the plan"]);
+	});
+
+	it("ignores invalid code-write policies", () => {
+		const result = parseArgs(["--code-writes", "main-only", "implement the plan"]);
+		expect(result.codeWrites).toBeUndefined();
+		expect(result.messages).toEqual(["implement the plan"]);
+	});
+});
+
 describe("parseArgs end-of-options (--)", () => {
 	it("treats tokens after -- as literal messages, not flags", () => {
 		const result = parseArgs(["--", "--profile", "work"]);

@@ -319,6 +319,8 @@ export interface ExecutorOptions {
 	description?: string;
 	/** Specialist role/expertise for this spawn; drives the system-prompt preamble, display name, and telemetry identity. */
 	role?: string;
+	/** Machine routing role: selects model tier for this spawn; distinct from `role` (specialist identity). */
+	modelRole?: string;
 	index: number;
 	id: string;
 	parentToolCallId?: string;
@@ -335,6 +337,14 @@ export interface ExecutorOptions {
 	 * if the resolved subagent model has no working credentials. See #985.
 	 */
 	parentActiveModelPattern?: string;
+	/** The explicit model pattern(s) requested before routing/fallback resolution. */
+	requestedModel?: string;
+	/** Ordered fallback model role names from routing resolution. */
+	fallbackModelRoles?: string[];
+	/** Unique, ordered model override patterns from routing resolution. */
+	modelOverrides?: string[];
+	/** Service tier assigned to this spawn. */
+	serviceTier?: string;
 	thinkingLevel?: ThinkingLevel;
 	outputSchema?: unknown;
 	/** Parent task recursion depth (0 = top-level, 1 = first child, etc.) */
@@ -365,6 +375,7 @@ export interface ExecutorOptions {
 	eventBus?: EventBus;
 	contextFiles?: ContextFileEntry[];
 	skills?: Skill[];
+	requiredSkillEvidence?: string[];
 	promptTemplates?: PromptTemplate[];
 	workspaceTree?: WorkspaceTree;
 	/** Parent-discovered rules, forwarded to skip rule discovery in the subagent. */
@@ -556,6 +567,18 @@ export const SUBAGENT_WARNING_NULL_YIELD = "SYSTEM WARNING: Subagent called yiel
 export const SUBAGENT_WARNING_MISSING_YIELD =
 	"SYSTEM WARNING: Subagent exited without calling yield tool after 3 reminders.";
 
+function isAcceptedYieldItem(item: YieldItem | undefined): item is YieldItem {
+	return item?.status === "success" || item?.status === "aborted";
+}
+
+function hasAcceptedYieldItems(yieldItems: YieldItem[] | undefined): boolean {
+	return Array.isArray(yieldItems) && yieldItems.some(isAcceptedYieldItem);
+}
+
+function hasSuccessfulYieldItems(yieldItems: YieldItem[] | undefined): boolean {
+	return Array.isArray(yieldItems) && yieldItems.some(item => item?.status === "success");
+}
+
 /** Build a schema_violation outcome — surfaced as a non-zero exit so callers treat it as a failure. */
 function buildSchemaViolationOutcome(
 	failure: { message: string; missingRequired: string[] },
@@ -585,11 +608,12 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 	let { rawOutput, exitCode, stderr } = args;
 	const { yieldItems, reportFindings, doneAborted, signalAborted, outputSchema } = args;
 	let abortedViaYield = false;
-	const hasYield = Array.isArray(yieldItems) && yieldItems.length > 0;
+	const hasYield = hasAcceptedYieldItems(yieldItems);
 	const hadFailureBeforeYield = exitCode !== 0 && stderr.trim().length > 0;
 
 	if (hasYield) {
-		const lastYield = yieldItems[yieldItems.length - 1];
+		const acceptedYieldItems = yieldItems?.filter(isAcceptedYieldItem) ?? [];
+		const lastYield = acceptedYieldItems[acceptedYieldItems.length - 1];
 		if (lastYield?.status === "aborted") {
 			abortedViaYield = true;
 			exitCode = 0;
@@ -828,6 +852,8 @@ interface RunMonitorArgs {
 	agent: AgentDefinition;
 	task: string;
 	assignment?: string;
+	modelRole?: string;
+	requestedModel?: string;
 	description?: string;
 	modelOverride?: string | string[];
 	signal?: AbortSignal;
@@ -854,6 +880,8 @@ interface SubagentRunMonitor {
 	readonly accumulatedUsage: Usage;
 	hasUsage(): boolean;
 	yieldCalled(): boolean;
+	acceptedYieldCalled(): boolean;
+	successfulYieldCalled(): boolean;
 	runtimeLimitExceeded(): boolean;
 	/** True when the abort carries a precise external reason (signal / wall-clock / budget). */
 	hasExplicitAbortReason(): boolean;
@@ -901,6 +929,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		cost: 0,
 		durationMs: 0,
 		modelOverride: args.modelOverride,
+		modelRole: args.modelRole,
+		requestedModel: args.requestedModel,
 	};
 
 	const outputChunks: string[] = [];
@@ -949,12 +979,6 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	};
 
 	const requestAbort = (reason: AbortReason) => {
-		if (reason === "timeout") {
-			runtimeLimitExceeded = true;
-		}
-		if (reason === "budget") {
-			budgetLimitExceeded = true;
-		}
 		if (abortSent) {
 			if (reason === "signal" && abortReason !== "signal" && abortReason !== "timeout") {
 				abortReason = "signal";
@@ -962,6 +986,12 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			return;
 		}
 		if (resolved) return;
+		if (reason === "timeout") {
+			runtimeLimitExceeded = true;
+		}
+		if (reason === "budget") {
+			budgetLimitExceeded = true;
+		}
 		abortSent = true;
 		abortReason = reason;
 		abortController.abort();
@@ -1023,6 +1053,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 
 	const emitProgressNow = () => {
 		progress.durationMs = Date.now() - startTime;
+		progress.advisorModel = activeSession?.getAdvisorModelAssignment?.();
 		onProgress?.({ ...progress });
 		const activityGist =
 			progress.lastIntent ?? (progress.currentTool ? `running ${progress.currentTool}` : undefined);
@@ -1036,6 +1067,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				parentToolCallId: args.parentToolCallId,
 				detached: args.detached,
 				assignment,
+				advisorModel: progress.advisorModel,
 				progress: { ...progress },
 				sessionFile: args.sessionFile,
 			});
@@ -1440,6 +1472,11 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		accumulatedUsage,
 		hasUsage: () => hasUsage,
 		yieldCalled: () => yieldCalled,
+		acceptedYieldCalled: () => {
+			return hasAcceptedYieldItems(progress.extractedToolData?.yield as YieldItem[] | undefined);
+		},
+		successfulYieldCalled: () =>
+			hasSuccessfulYieldItems(progress.extractedToolData?.yield as YieldItem[] | undefined),
 		runtimeLimitExceeded: () => runtimeLimitExceeded,
 		hasExplicitAbortReason: () => abortReason === "signal" || runtimeLimitExceeded || budgetLimitExceeded,
 		isAbortedRun: () =>
@@ -1536,7 +1573,7 @@ async function driveSessionToYield(
 		const reminderToolChoice = buildNamedToolChoice("yield", session.model);
 
 		let retryCount = 0;
-		while (!monitor.yieldCalled() && retryCount < MAX_YIELD_RETRIES && !abortSignal.aborted) {
+		while (!monitor.acceptedYieldCalled() && retryCount < MAX_YIELD_RETRIES && !abortSignal.aborted) {
 			// Skip reminders when the model returned a terminal error (e.g.
 			// rate-limit cap hit, auth failure). Re-prompting would just
 			// hit the same wall, multiplying the failure noise without
@@ -1566,6 +1603,7 @@ async function driveSessionToYield(
 					// catch and finally already mark the run aborted; logging at ERROR
 					// would spam operator dashboards with non-failures.
 					logger.debug("Subagent prompt aborted");
+					break;
 				} else {
 					logger.error("Subagent prompt failed", {
 						error: err instanceof Error ? err.message : String(err),
@@ -1574,22 +1612,22 @@ async function driveSessionToYield(
 			}
 		}
 
-		await awaitAbortable(session.waitForIdle());
+		if (!monitor.acceptedYieldCalled() && !abortSignal.aborted) {
+			await awaitAbortable(session.waitForIdle());
+		}
 
 		const lastAssistant = session.getLastAssistantMessage();
 		if (lastAssistant) {
 			if (lastAssistant.stopReason === "aborted") {
-				aborted = monitor.isAbortedRun();
-				if (aborted) {
-					// A real caller signal or the wall-clock timer carries a precise
-					// reason (signal.reason / "runtime limit exceeded"). An internal
-					// turn abort does NOT — prefer the assistant message's own
-					// errorMessage ("Request was aborted" or a specific stream error)
-					// over the misleading "Cancelled by caller".
-					abortReasonText ??= monitor.hasExplicitAbortReason()
-						? monitor.resolveAbortReasonText()
-						: lastAssistant.errorMessage?.trim() || monitor.resolveAbortReasonText();
-				}
+				aborted = true;
+				// A real caller signal or the wall-clock timer carries a precise
+				// reason (signal.reason / "runtime limit exceeded"). An internal
+				// turn abort does NOT — prefer the assistant message's own
+				// errorMessage ("Request was aborted" or a specific stream error)
+				// over the misleading "Cancelled by caller".
+				abortReasonText ??= monitor.hasExplicitAbortReason()
+					? monitor.resolveAbortReasonText()
+					: lastAssistant.errorMessage?.trim() || monitor.resolveAbortReasonText();
 				exitCode = 1;
 			} else if (lastAssistant.stopReason === "error") {
 				exitCode = 1;
@@ -1603,7 +1641,7 @@ async function driveSessionToYield(
 		}
 	} finally {
 		if (abortSignal.aborted) {
-			aborted = monitor.isAbortedRun();
+			aborted = !monitor.successfulYieldCalled();
 			if (aborted) {
 				abortReasonText ??= monitor.resolveAbortReasonText();
 			}
@@ -1612,6 +1650,17 @@ async function driveSessionToYield(
 	}
 
 	return { exitCode, error, aborted, abortReasonText };
+}
+
+function appendTaskCardReminders(task: string, requiredSkillEvidence: readonly string[] | undefined): string {
+	const requiredSkills = [...new Set((requiredSkillEvidence ?? []).map(skill => skill.trim()).filter(Boolean))];
+	if (requiredSkills.length === 0) return task;
+	const skillReminder = [
+		"Required skills for this task:",
+		...requiredSkills.map(skill => `- ${skill}`),
+		"Follow TDD order: RED_EVIDENCE, GREEN_EVIDENCE, REGRESSION_EVIDENCE.",
+	].join("\n");
+	return `${task.trimEnd()}\n\n${skillReminder}`;
 }
 
 interface FinalizeRunArgs {
@@ -1631,7 +1680,17 @@ interface FinalizeRunArgs {
 	parentToolCallId?: string;
 	detached?: boolean;
 	sessionFile?: string;
+	modelRole?: string;
+	requestedModel?: string;
 	startTime: number;
+	/** Ordered fallback model role names from routing resolution. */
+	fallbackModelRoles?: string[];
+	/** Unique, ordered model override patterns from routing resolution. */
+	modelOverrides?: string[];
+	/** Service tier assigned to this spawn. */
+	serviceTier?: string;
+	/** Thinking level assigned to this spawn. */
+	thinkingLevel?: string;
 }
 
 /**
@@ -1683,7 +1742,8 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	) {
 		rawOutput = `[cancelled after ${progress.requests} req, ${progress.tokens} tok — last activity: "${formatSalvageSnippet(salvageText)}"]`;
 	}
-	const lastYield = yieldItems?.[yieldItems.length - 1];
+	const acceptedYieldItems = yieldItems?.filter(isAcceptedYieldItem) ?? [];
+	const lastYield = acceptedYieldItems[acceptedYieldItems.length - 1];
 	const yieldAbortReason = lastYield?.status === "aborted" ? lastYield.error || "Subagent aborted task" : undefined;
 	const { abortedViaYield, hasYield } = finalized;
 	const { content: truncatedOutput, truncated } = truncateTail(rawOutput, {
@@ -1742,6 +1802,14 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 			status: progress.status as "completed" | "failed" | "aborted",
 			sessionFile: args.sessionFile,
 			index,
+			modelRole: args.modelRole,
+			requestedModel: args.requestedModel,
+			fallbackUsed: progress.fallbackUsed,
+			fallbackModelRoles: args.fallbackModelRoles,
+			modelOverrides: args.modelOverrides,
+			serviceTier: args.serviceTier,
+			thinkingLevel: args.thinkingLevel,
+			advisorModel: progress.advisorModel,
 		});
 	}
 
@@ -1764,8 +1832,16 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		contextTokens: progress.contextTokens,
 		contextWindow: progress.contextWindow,
 		modelOverride,
+		modelRole: args.modelRole,
+		requestedModel: args.requestedModel,
 		resolvedModel: progress.resolvedModel,
 		error: exitCode !== 0 && stderr ? stderr : undefined,
+		fallbackUsed: progress.fallbackUsed,
+		fallbackModelRoles: args.fallbackModelRoles,
+		modelOverrides: args.modelOverrides,
+		serviceTier: args.serviceTier,
+		thinkingLevel: args.thinkingLevel,
+		advisorModel: progress.advisorModel,
 		aborted: wasAborted,
 		abortReason: finalAbortReason,
 		usage: monitor.hasUsage() ? monitor.accumulatedUsage : undefined,
@@ -1847,6 +1923,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		enableLsp,
 		signal,
 		onProgress,
+		modelRole,
+		requestedModel,
+		fallbackModelRoles,
+		modelOverrides,
+		serviceTier,
 	} = options;
 	const startTime = Date.now();
 	// Set by the session's onFirstChatDispatch hook the first time the agent
@@ -1871,6 +1952,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			tokens: 0,
 			requests: 0,
 			modelOverride,
+			modelRole,
+			requestedModel,
+			fallbackModelRoles,
+			modelOverrides,
+			serviceTier,
+			thinkingLevel,
 			error: "Cancelled before start",
 			aborted: true,
 			abortReason: "Cancelled before start",
@@ -1945,8 +2032,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		? ""
 		: agent.spawns === undefined
 			? ""
-			: agent.spawns === "*"
-				? "*"
+			: typeof agent.spawns === "string"
+				? agent.spawns
 				: agent.spawns.join(",");
 
 	const lspEnabled = enableLsp ?? true;
@@ -1969,6 +2056,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		sessionFile: subtaskSessionFile,
 		softRequestBudget,
 		maxRuntimeMs,
+		modelRole,
+		requestedModel,
 	});
 	const progress = monitor.progress;
 	let unsubscribe: (() => void) | null = null;
@@ -2096,6 +2185,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					? formatModelSelectorValue(formatModelStringWithRouting(model), resolvedThinkingLevel)
 					: formatModelStringWithRouting(model);
 			}
+			progress.fallbackUsed = authFallbackUsed;
 			const effectiveThinkingLevel = explicitThinkingLevel
 				? resolvedThinkingLevel
 				: (thinkingLevel ?? resolvedThinkingLevel);
@@ -2266,6 +2356,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					status: "started",
 					sessionFile: subtaskSessionFile,
 					index,
+					modelRole,
+					requestedModel,
+					fallbackModelRoles,
+					modelOverrides,
+					serviceTier,
+					thinkingLevel,
+					advisorModel: session.getAdvisorModelAssignment(),
 				});
 			}
 
@@ -2365,7 +2462,15 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// Autoload skills via sendCustomMessage (same mechanic as /skill:<name>)
 			if (options.autoloadSkills?.length) {
 				for (const skill of options.autoloadSkills) {
-					const { message } = await buildSkillPromptMessage(skill, "");
+					const { message } = await buildSkillPromptMessage(skill, "", {
+						codebaseMemoryGate: {
+							enabled: session.settings.get("superpowers.codebaseMemoryGate.enabled") as boolean,
+							mode: session.settings.get("superpowers.codebaseMemoryGate.mode") as
+								| "off"
+								| "advisory"
+								| "required",
+						},
+					});
 					await session.sendCustomMessage(
 						{
 							customType: SKILL_PROMPT_MESSAGE_TYPE,
@@ -2379,7 +2484,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 
 			readyAt = performance.now();
-			const outcome = await driveSessionToYield(session, monitor, task);
+			const promptedTask = appendTaskCardReminders(task, options.requiredSkillEvidence);
+			const outcome = await driveSessionToYield(session, monitor, promptedTask);
 			exitCode = outcome.exitCode;
 			error = outcome.error;
 			aborted = outcome.aborted;
@@ -2391,7 +2497,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 		} finally {
 			if (abortSignal.aborted) {
-				aborted = monitor.isAbortedRun();
+				aborted = !monitor.successfulYieldCalled();
 				if (aborted) {
 					abortReasonText ??= monitor.resolveAbortReasonText();
 				}
@@ -2488,6 +2594,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		parentToolCallId: options.parentToolCallId,
 		detached: options.detached,
 		sessionFile: subtaskSessionFile,
+		modelRole,
+		requestedModel,
+		fallbackModelRoles,
+		modelOverrides,
+		serviceTier,
+		thinkingLevel,
 		startTime,
 	});
 }

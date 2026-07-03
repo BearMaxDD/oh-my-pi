@@ -3,22 +3,43 @@ import { stripVTControlCharacters } from "node:util";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ModelSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/model-selector";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { TUI } from "@oh-my-pi/pi-tui";
+
+type TestSettings = ReturnType<typeof makeSettings>;
+
+function makeSettings(
+	overrides: {
+		modelRoles?: Record<string, string>;
+		modelTags?: Record<string, any>;
+		cycleOrder?: string[];
+		modelProviderOrder?: string[];
+	} = {},
+) {
+	return {
+		get: (key: string) => {
+			if (key === "cycleOrder") return overrides.cycleOrder ?? [];
+			if (key === "modelTags") return overrides.modelTags ?? {};
+			if (key === "modelProviderOrder") return overrides.modelProviderOrder ?? [];
+			return undefined;
+		},
+		getModelRoles: () => overrides.modelRoles ?? {},
+		getModelRole: (role: string) => overrides.modelRoles?.[role],
+		getStorage: () => undefined,
+	} as any;
+}
 
 function normalizeRenderedText(text: string): string {
 	return stripVTControlCharacters(text).replace(/\s+/g, " ").trim();
 }
 
-function createSelector(model: Model, settings: Settings): ModelSelectorComponent {
+function createSelector(model: Model, settings: TestSettings): ModelSelectorComponent {
 	const modelRegistry = {
 		getAll: () => [model],
 		getDiscoverableProviders: () => [],
 		getCanonicalModelSelections: () => [],
-	} as unknown as ModelRegistry;
+	} as any;
 	const ui = {
 		requestRender: vi.fn(),
 	} as unknown as TUI;
@@ -65,7 +86,7 @@ function createContextTestModel(id: string, contextWindow: number): Model {
 
 function createScopedSelector(
 	models: Model[],
-	settings: Settings,
+	settings: TestSettings,
 	onSelect: (model: Model) => void,
 	options?: { temporaryOnly?: boolean; currentContextTokens?: number },
 ): ModelSelectorComponent {
@@ -73,7 +94,7 @@ function createScopedSelector(
 		getAll: () => models,
 		getDiscoverableProviders: () => [],
 		getCanonicalModelSelections: () => [],
-	} as unknown as ModelRegistry;
+	} as any;
 	const ui = {
 		requestRender: vi.fn(),
 	} as unknown as TUI;
@@ -110,7 +131,7 @@ describe("ModelSelector role badge thinking display", () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected bundled model anthropic/claude-sonnet-4-5");
 
-		const settings = Settings.isolated({
+		const settings = makeSettings({
 			cycleOrder: ["smol", "custom-fast", "default"],
 			modelRoles: {
 				default: `${model.provider}/${model.id}`,
@@ -134,7 +155,7 @@ describe("ModelSelector role badge thinking display", () => {
 		installTestTheme();
 		const menuRendered = normalizeRenderedText(selector.render(220).join("\n"));
 		expect(menuRendered).toContain("Set as custom-fast");
-		expect(menuRendered).toContain("Set as SMOL (Quick)");
+		expect(menuRendered).toContain("Set as SMOL (快速小任务/轻量查询，建议轻量模型)");
 	});
 
 	test("renders xhigh effort for OpenAI GPT-5.5 thinking options", async () => {
@@ -142,7 +163,7 @@ describe("ModelSelector role badge thinking display", () => {
 		const model = getBundledModel("openai", "gpt-5.5");
 		if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
 
-		const selector = createSelector(model, Settings.isolated({}));
+		const selector = createSelector(model, makeSettings({}));
 		await Bun.sleep(0);
 		installTestTheme();
 
@@ -157,7 +178,7 @@ describe("ModelSelector role badge thinking display", () => {
 
 	test("shows compact auto badges for unconfigured role defaults", async () => {
 		installTestTheme();
-		const settings = Settings.isolated({});
+		const settings = makeSettings({});
 		const haiku = createContextTestModel("claude-haiku-4.5", 128_000);
 		const codex = createContextTestModel("gpt-5.1-codex", 128_000);
 
@@ -174,7 +195,7 @@ describe("ModelSelector role badge thinking display", () => {
 
 	test("dims and disables models below the current context size in temporary mode", async () => {
 		installTestTheme();
-		const settings = Settings.isolated({});
+		const settings = makeSettings({});
 		const small = createContextTestModel("a-small", 4096);
 		const large = createContextTestModel("b-large", 128_000);
 		const selected: string[] = [];
@@ -195,7 +216,7 @@ describe("ModelSelector role badge thinking display", () => {
 
 	test("labels temporary picker as session-only and points to role assignment", async () => {
 		installTestTheme();
-		const settings = Settings.isolated({});
+		const settings = makeSettings({});
 		const model = createContextTestModel("session-model", 128_000);
 		const selector = createScopedSelector([model], settings, () => {}, { temporaryOnly: true });
 		await Bun.sleep(0);
@@ -209,7 +230,7 @@ describe("ModelSelector role badge thinking display", () => {
 
 	test("opens the role assignment menu but guards over-context default switches", async () => {
 		installTestTheme();
-		const settings = Settings.isolated({});
+		const settings = makeSettings({});
 		const small = createContextTestModel("only-small", 4096);
 		const onSelect = vi.fn();
 		const selector = createScopedSelector([small], settings, onSelect, {
@@ -225,7 +246,7 @@ describe("ModelSelector role badge thinking display", () => {
 		selector.handleInput("\n");
 		const afterOpen = normalizeRenderedText(selector.render(220).join("\n"));
 		expect(afterOpen).toContain("Action for: only-small");
-		expect(afterOpen).toContain("Set as DEFAULT (Default) ⦸ context>4.1k");
+		expect(afterOpen).toContain("Set as DEFAULT (默认主对话/未指定角色，建议高级模型) ⦸ context>4.1k");
 
 		selector.handleInput("\n");
 		const afterRoleEnter = normalizeRenderedText(selector.render(220).join("\n"));
@@ -235,7 +256,7 @@ describe("ModelSelector role badge thinking display", () => {
 
 	test("uses cached models for Enter while offline refresh is still pending", () => {
 		installTestTheme();
-		const settings = Settings.isolated({});
+		const settings = makeSettings({});
 		const cachedModel = createContextTestModel("cached-fast", 128_000);
 		const refreshGate = Promise.withResolvers<void>();
 		const onSelect = vi.fn();
@@ -247,7 +268,7 @@ describe("ModelSelector role badge thinking display", () => {
 			getAvailable: () => [cachedModel],
 			getDiscoverableProviders: () => [],
 			getCanonicalModelSelections: () => [],
-		} as unknown as ModelRegistry;
+		} as any;
 		const ui = {
 			requestRender: vi.fn(),
 		} as unknown as TUI;
@@ -271,7 +292,7 @@ describe("ModelSelector role badge thinking display", () => {
 
 	test("keeps the highlighted model when a background refresh reorders the list", async () => {
 		installTestTheme();
-		const settings = Settings.isolated({});
+		const settings = makeSettings({});
 		const modelBb = createContextTestModel("bb-model", 128_000);
 		const modelCc = createContextTestModel("cc-model", 128_000);
 		const modelAa = createContextTestModel("aa-model", 128_000);
@@ -286,7 +307,7 @@ describe("ModelSelector role badge thinking display", () => {
 			getAvailable: () => availableModels,
 			getDiscoverableProviders: () => [],
 			getCanonicalModelSelections: () => [],
-		} as unknown as ModelRegistry;
+		} as any;
 		const ui = {
 			requestRender: vi.fn(),
 		} as unknown as TUI;
@@ -315,7 +336,7 @@ describe("ModelSelector role badge thinking display", () => {
 
 	test("refreshes Ollama Cloud using provider id instead of tab label", async () => {
 		installTestTheme();
-		const settings = Settings.isolated({});
+		const settings = makeSettings({});
 		const discoveredModel = createOllamaCloudModel("deepseek-v4-pro");
 		let availableModels: Model[] = [];
 		const refreshProvider = vi.fn(async (providerId: string) => {
@@ -338,7 +359,7 @@ describe("ModelSelector role badge thinking display", () => {
 				stale: false,
 				models: [],
 			}),
-		} as unknown as ModelRegistry;
+		} as any;
 		const ui = {
 			requestRender: vi.fn(),
 		} as unknown as TUI;
@@ -372,7 +393,7 @@ describe("ModelSelector role badge thinking display", () => {
 
 	test("switches provider tabs immediately and refreshes in background with spinner animation", async () => {
 		installTestTheme();
-		const settings = Settings.isolated({});
+		const settings = makeSettings({});
 		const discoveredModel = createOllamaCloudModel("deepseek-v4-pro");
 		let availableModels: Model[] = [];
 		let resolveRefresh: (() => void) | undefined;
@@ -400,7 +421,7 @@ describe("ModelSelector role badge thinking display", () => {
 				stale: false,
 				models: [],
 			}),
-		} as unknown as ModelRegistry;
+		} as any;
 		const ui = {
 			requestRender: vi.fn(),
 		} as unknown as TUI;
@@ -446,5 +467,77 @@ describe("ModelSelector role badge thinking display", () => {
 		const finalRendered = normalizeRenderedText(selector.render(220).join("\n"));
 		expect(finalRendered).toContain("deepseek-v4-pro");
 		expect(finalRendered).not.toContain("Refreshing OLLAMA CLOUD in background");
+	});
+
+	test("shows Superpowers role descriptions in menu labels", async () => {
+		installTestTheme();
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected bundled model anthropic/claude-sonnet-4-5");
+
+		const settings = makeSettings({
+			cycleOrder: ["superpowers:tdd-writer", "superpowers:runtime-simulator", "superpowers:acceptance"],
+		});
+
+		const selector = createSelector(model, settings);
+		await Bun.sleep(0);
+		installTestTheme();
+
+		selector.handleInput("\n");
+		installTestTheme();
+
+		const menuRendered = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(menuRendered).toContain(
+			"Set as superpowers:tdd-writer (TDD Writer，写失败测试和 red evidence，建议高级模型)",
+		);
+		expect(menuRendered).toContain(
+			"Set as superpowers:runtime-simulator (Runtime Simulator，真实环境业务路径模拟，建议高质量模型)",
+		);
+		expect(menuRendered).toContain("Set as ACCEPT (Acceptance，最终验收/must-fix 判定，建议最高质量模型)");
+	});
+
+	test("keeps legacy menu labels unchanged when no description exists", async () => {
+		installTestTheme();
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected bundled model anthropic/claude-sonnet-4-5");
+
+		const settings = makeSettings({
+			modelTags: {
+				"custom-no-description": { name: "Custom No Description" },
+			},
+		});
+
+		const selector = createSelector(model, settings);
+		await Bun.sleep(0);
+		installTestTheme();
+
+		selector.handleInput("\n");
+		installTestTheme();
+
+		const menuRendered = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(menuRendered).toContain("Set as Custom No Description");
+		expect(menuRendered).not.toContain("Custom No Description：");
+	});
+	test("suppresses description for non-superpowers tagless custom roles", async () => {
+		installTestTheme();
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected bundled model anthropic/claude-sonnet-4-5");
+
+		const settings = makeSettings({
+			modelTags: {
+				"custom-described": { name: "custom-described", description: "中文说明" },
+			},
+		});
+
+		const selector = createSelector(model, settings);
+		await Bun.sleep(0);
+		installTestTheme();
+
+		selector.handleInput("\n");
+		installTestTheme();
+
+		const menuRendered = normalizeRenderedText(selector.render(220).join("\n"));
+		// non-superpowers roles must NOT render description
+		expect(menuRendered).toContain("Set as custom-described");
+		expect(menuRendered).not.toContain("中文说明");
 	});
 });

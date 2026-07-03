@@ -313,3 +313,17 @@ Settings capability items are not deduplicated; `Settings.#loadProjectSettings()
 - Legacy setting names `skills.enablePiUser` / `skills.enablePiProject` are still active gates for native skill source.
 
 If these compatibility paths are removed in code, update this document immediately; several runtime behaviors still depend on them today.
+
+---
+
+## 10) Compaction settings for smart routing
+
+Settings keys controlling smart compaction routing behavior:
+
+- `compaction.strategy = "smart"`
+- `compaction.smartFallback = true`
+- `compaction.preferSnapcompactWhenSafe = true`
+- `compaction.overflowStrategy = "context-full"`
+- `compaction.emergencyRetryDropOldest = true`
+
+The existing `compaction.strategy = "snapcompact"` remains valid. In ordinary manual and automatic paths it means "prefer snapcompact" and uses smart fallback when `compaction.smartFallback = true`; explicit `/compact snapcompact` is strict regardless of this setting.

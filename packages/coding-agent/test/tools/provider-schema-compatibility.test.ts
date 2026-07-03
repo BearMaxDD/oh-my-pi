@@ -27,6 +27,13 @@ function createTestSession(): ToolSession {
 	};
 }
 
+function createDiscoveryTestSession(): ToolSession {
+	return {
+		...createTestSession(),
+		settings: Settings.isolated({ "tools.discoveryMode": "all" }),
+	};
+}
+
 function asSchemaObject(value: unknown): Record<string, unknown> | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return null;
@@ -56,6 +63,23 @@ async function collectToolSchemas(): Promise<ToolSchemaEntry[]> {
 			continue;
 		}
 		byToolName.set(name, schema);
+	}
+
+	return [...byToolName.entries()]
+		.sort(([left], [right]) => left.localeCompare(right))
+		.map(([name, schema]) => ({ name, schema }));
+}
+
+async function collectDiscoverableToolSchemas(): Promise<ToolSchemaEntry[]> {
+	const session = createDiscoveryTestSession();
+	const byToolName = new Map<string, Record<string, unknown>>();
+
+	for (const tool of await createTools(session)) {
+		const schema = toolWireSchema(tool);
+		if (!asSchemaObject(schema)) {
+			continue;
+		}
+		byToolName.set(tool.name, schema);
 	}
 
 	return [...byToolName.entries()]
@@ -125,6 +149,15 @@ describe("builtin tool schemas provider compatibility", () => {
 		if (failures.length > 0) {
 			throw new Error(`Provider compatibility failures:\n\n${failures.join("\n\n")}`);
 		}
+
+		expect(failures).toEqual([]);
+	});
+
+	it("keeps discoverable tool schemas valid OpenAI function parameter objects", async () => {
+		const toolSchemas = await collectDiscoverableToolSchemas();
+		const failures = toolSchemas
+			.filter(({ schema }) => schema.type !== "object")
+			.map(({ name, schema }) => `${name}: top-level schema type is ${String(schema.type)}`);
 
 		expect(failures).toEqual([]);
 	});

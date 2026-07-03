@@ -7,7 +7,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
-import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
@@ -571,6 +571,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 		// the failed turn the rebuilt prompt is over the window, so retrying would
 		// hit the same overflow. Pause once instead of looping.
 		seedPriorTurns();
+		session.settings.set("compaction.emergencyRetryDropOldest", false);
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
 		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 205000, contextWindow: 200000, percent: 102.5 });
@@ -596,5 +597,38 @@ describe("AgentSession auto-compaction progress guard", () => {
 		const noProgress = notices.filter(n => n.source === NOTICE_SOURCE && n.message.includes(NO_PROGRESS_FRAGMENT));
 		expect(noProgress.length).toBe(1);
 		expect(noProgress[0].level).toBe("warning");
+	});
+
+	it("marks overflow no-progress recovery as emergency-context-full and emits a precise dead-end notice", async () => {
+		seedPriorTurns();
+		session.settings.set("compaction.strategy", "smart");
+		session.settings.set("compaction.emergencyRetryDropOldest", true);
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
+		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 250000, contextWindow: 200000, percent: 125 });
+		const notices = collectNotices();
+		const { promise: compactionDone, resolve: onCompactionDone } = Promise.withResolvers<void>();
+		const endEvents: AgentSessionEvent[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end") {
+				endEvents.push(event);
+				onCompactionDone();
+			}
+		});
+		const assistantMsg = overflowAssistant();
+		session.agent.emitExternalEvent({ type: "message_end", message: assistantMsg });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
+		await compactionDone;
+		await session.waitForIdle();
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(endEvents[0]).toMatchObject({
+			type: "auto_compaction_end",
+			action: "emergency-context-full",
+			selectedAction: "emergency-context-full",
+			routeReason: "no_progress_after_context_full",
+		});
+		expect(notices.some(n => n.message.includes("Emergency context-full could not create retry headroom"))).toBe(
+			true,
+		);
 	});
 });

@@ -9,7 +9,7 @@
  * flags.
  */
 import { describe, expect, test } from "bun:test";
-import { resolveCliArgv } from "@oh-my-pi/pi-coding-agent/cli-commands";
+import { commands, isSubcommand, resolveCliArgv } from "@oh-my-pi/pi-coding-agent/cli-commands";
 
 describe("resolveCliArgv routes subcommands hidden behind leading global flags", () => {
 	test("`--approval-mode=yolo acp` dispatches the acp subcommand with the flag preserved", () => {
@@ -59,6 +59,19 @@ describe("resolveCliArgv routes subcommands hidden behind leading global flags",
 	test("`gc` dispatches as a top-level maintenance subcommand", () => {
 		expect(resolveCliArgv(["gc", "--apply"])).toEqual({
 			argv: ["gc", "--apply"],
+		});
+	});
+});
+
+describe("plan-run CLI routing", () => {
+	test("plan-run is registered as a top-level subcommand", () => {
+		expect(commands.some(command => command.name === "plan-run")).toBe(true);
+		expect(isSubcommand("plan-run")).toBe(true);
+	});
+
+	test("leading global flags route to plan-run instead of launch", () => {
+		expect(resolveCliArgv(["--approval-mode=yolo", "plan-run", "--book", "book.json"])).toEqual({
+			argv: ["plan-run", "--approval-mode=yolo", "--book", "book.json"],
 		});
 	});
 });

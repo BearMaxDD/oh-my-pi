@@ -784,3 +784,20 @@ describe("Settings", () => {
 		});
 	});
 });
+
+describe("smart compaction settings", () => {
+	it("accepts smart strategy and smart router knobs", () => {
+		const settings = Settings.isolated({
+			"compaction.strategy": "smart",
+			"compaction.smartFallback": true,
+			"compaction.preferSnapcompactWhenSafe": true,
+			"compaction.overflowStrategy": "context-full",
+			"compaction.emergencyRetryDropOldest": true,
+		});
+		expect(settings.get("compaction.strategy")).toBe("smart");
+		expect(settings.get("compaction.smartFallback")).toBe(true);
+		expect(settings.get("compaction.preferSnapcompactWhenSafe")).toBe(true);
+		expect(settings.get("compaction.overflowStrategy")).toBe("context-full");
+		expect(settings.get("compaction.emergencyRetryDropOldest")).toBe(true);
+	});
+});

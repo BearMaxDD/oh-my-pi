@@ -105,7 +105,7 @@ import { normalizeLocalScheme } from "../tools/path-utils";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import { type ResolveToolDetails, runResolveInvocation } from "../tools/resolve";
-import { formatPhaseDisplayName, todoMatchesAnyDescription } from "../tools/todo";
+import { formatPhaseDisplayName, formatTodoModelBadges, todoMatchesAnyDescription } from "../tools/todo";
 import { ToolError } from "../tools/tool-errors";
 import { vocalizer } from "../tts/vocalizer";
 import { renderTreeList } from "../tui/tree-list";
@@ -155,6 +155,17 @@ import {
 	type LoopLimitRuntime,
 	parseLoopLimitArgs,
 } from "./loop-limit";
+import {
+	type AdvisorModelUiRefreshCoordinator,
+	createAdvisorModelUiRefreshCoordinator,
+	createMainModelUiRefreshCoordinator,
+	createModelAssignment,
+	createModelUsageSummaryLineRenderer,
+	formatModelBadge,
+	type MainModelUiRefreshCoordinator,
+	type ModelUsageSummaryLineRenderer,
+	type ModelVisibilityValue,
+} from "./model-visibility";
 import { OAuthManualInputManager } from "./oauth-manual-input";
 import { countRunningSubagentBadgeAgents, getRunningSubagentBadgeRegistry } from "./running-subagent-badge";
 import type { ObservableSession } from "./session-observer-registry";
@@ -339,6 +350,21 @@ const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
  * eval `agent()` spawns are rendered by their own eval cell tree.
  * Returns an empty array when nothing is running so the container can clear.
  */
+function modelAssignmentFromProgress(session: ObservableSession): ModelVisibilityValue | undefined {
+	const progress = session.progress;
+	if (!progress?.resolvedModel) {
+		if (progress?.modelRole) return { state: "resolving" };
+		return undefined;
+	}
+	if (!progress.modelRole && !progress.fallbackUsed) return undefined;
+	return createModelAssignment({
+		role: progress.modelRole ?? "task",
+		model: progress.resolvedModel,
+		source: progress.fallbackUsed ? "fallback" : "modelRoles",
+		scope: "current-task",
+	});
+}
+
 export function renderSubagentHudLines(sessions: ObservableSession[], columns: number): string[] {
 	const running = sessions.filter(
 		session => session.kind === "subagent" && session.status === "active" && session.detached === true,
@@ -353,16 +379,44 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 		const prefix = `${indent}${index === 0 ? hook : " "} `;
 		const displayId = formatTaskId(session.id);
 		let line = `${prefix}${dot} ${theme.fg("accent", theme.bold(displayId))}`;
+		const executionModel = session.modelAssignment?.executionModel ?? modelAssignmentFromProgress(session);
+		const advisorModel = session.modelAssignment?.advisorModel;
+		const executionRole =
+			executionModel && !("state" in executionModel)
+				? executionModel.role
+				: (session.progress?.modelRole ?? session.agent ?? "task");
+		const badges = [
+			formatModelBadge(executionRole, executionModel),
+			formatModelBadge("advisor", advisorModel),
+		].filter((badge): badge is string => Boolean(badge));
+		const badgeText = badges.join(` ${theme.sep.dot} `);
+		const badgeWidth = badgeText ? visibleWidth(badgeText) : 0;
 		const description = session.description?.trim() || session.progress?.description?.trim();
 		if (description) {
-			const budget = Math.max(TRUNCATE_LENGTHS.SHORT, columns - visibleWidth(prefix) - visibleWidth(displayId) - 6);
+			const badgeReserve = badgeWidth > 0 ? badgeWidth + 1 : 0;
+			const budget =
+				badgeWidth > 0
+					? Math.max(0, columns - visibleWidth(line) - 2 - badgeReserve)
+					: Math.max(TRUNCATE_LENGTHS.SHORT, columns - visibleWidth(prefix) - visibleWidth(displayId) - 6);
 			line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(replaceTabs(description), budget))}`;
 		} else {
 			// No spawn description: fall back to a muted task preview, same as
 			// the inline task rows when a row has no label.
 			const taskPreview = session.progress?.task?.trim();
 			if (taskPreview) {
-				line += ` ${theme.fg("muted", truncateToWidth(replaceTabs(taskPreview), TRUNCATE_LENGTHS.SHORT))}`;
+				const badgeReserve = badgeWidth > 0 ? badgeWidth + 1 : 0;
+				const budget =
+					badgeWidth > 0 ? Math.max(0, columns - visibleWidth(line) - 1 - badgeReserve) : TRUNCATE_LENGTHS.SHORT;
+				line += ` ${theme.fg("muted", truncateToWidth(replaceTabs(taskPreview), budget))}`;
+			}
+		}
+		if (badgeText) {
+			const remaining = Math.max(0, columns - visibleWidth(line) - 1);
+			if (remaining > 0) {
+				const visibleBadge = truncateToWidth(badgeText, remaining);
+				if (visibleBadge && visibleBadge !== "…") {
+					line += ` ${theme.fg("muted", visibleBadge)}`;
+				}
 			}
 		}
 		lines.push(line);
@@ -385,6 +439,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	statusContainer: Container;
 	todoContainer: Container;
 	subagentContainer: Container;
+	modelUsageContainer: Container;
 	btwContainer: Container;
 	omfgContainer: Container;
 	errorBannerContainer: Container;
@@ -553,6 +608,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	#voicePreviousUseTerminalCursor: boolean | null = null;
 	#resizeHandler?: () => void;
 	#observerRegistry: SessionObserverRegistry;
+	#modelUsageSummaryRenderer: ModelUsageSummaryLineRenderer;
+	#mainModelUiRefreshCoordinator: MainModelUiRefreshCoordinator;
+	#advisorModelUiRefreshCoordinator: AdvisorModelUiRefreshCoordinator;
 	#eventBus?: EventBus;
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#agentRegistryUnsubscribe?: () => void;
@@ -617,6 +675,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusContainer = new AnchoredLiveContainer();
 		this.todoContainer = new AnchoredLiveContainer();
 		this.subagentContainer = new AnchoredLiveContainer();
+		this.modelUsageContainer = new AnchoredLiveContainer();
 		this.btwContainer = new AnchoredLiveContainer();
 		this.omfgContainer = new AnchoredLiveContainer();
 		this.errorBannerContainer = new AnchoredLiveContainer();
@@ -695,6 +754,23 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
 		this.#observerRegistry = new SessionObserverRegistry();
+		this.#modelUsageSummaryRenderer = createModelUsageSummaryLineRenderer({
+			getMainModel: () =>
+				this.session.model ? `${this.session.model.provider}/${this.session.model.id}` : undefined,
+			getSessions: () => this.#observerRegistry.getSessions(),
+		});
+		this.#mainModelUiRefreshCoordinator = createMainModelUiRefreshCoordinator({
+			invalidateStatusLine: () => this.statusLine.invalidate(),
+			updateEditorBorderColor: () => this.updateEditorBorderColor({ requestRender: false }),
+			refreshModelUsageSummary: () => this.refreshModelUsageSummary(),
+			requestRender: () => this.ui.requestRender(),
+		});
+		this.#advisorModelUiRefreshCoordinator = createAdvisorModelUiRefreshCoordinator({
+			invalidateStatusLine: () => this.statusLine.invalidate(),
+			syncRunningSubagentBadge: () => this.syncRunningSubagentBadge(),
+			refreshModelUsageSummary: () => this.refreshModelUsageSummary(),
+			requestRender: () => this.ui.requestRender(),
+		});
 	}
 
 	#handleMcpConnectionStatusEvent(event: McpConnectionStatusEvent): void {
@@ -836,6 +912,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.todoContainer);
 		this.ui.addChild(this.subagentContainer);
+		this.ui.addChild(this.modelUsageContainer);
 		this.ui.addChild(this.btwContainer);
 		this.ui.addChild(this.omfgContainer);
 		this.ui.addChild(this.errorBannerContainer);
@@ -874,6 +951,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#syncTodoAutoClearTimer();
 			this.#renderTodoList();
 			this.#renderSubagentList();
+			this.#renderModelUsageSummary();
 			this.ui.requestRender();
 		});
 
@@ -1431,7 +1509,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.updateEditorBorderColor();
 	}
 
-	updateEditorBorderColor(): void {
+	updateEditorBorderColor(options: { requestRender?: boolean } = {}): void {
 		if (this.isBashMode) {
 			this.editor.borderColor = theme.getBashModeBorderColor();
 		} else if (this.isPythonMode) {
@@ -1457,7 +1535,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.editor.borderColor = (str: string) => `\x1b[2m${base(str)}\x1b[22m`;
 		}
 		this.updateEditorTopBorder();
-		this.ui.requestRender();
+		if (options.requestRender !== false) this.ui.requestRender();
 	}
 
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
@@ -1519,16 +1597,24 @@ export class InteractiveMode implements InteractiveModeContext {
 	#formatTodoLine(todo: TodoItem, prefix: string, matched: boolean): string {
 		const checkbox = theme.checkbox;
 		const marker = formatHudNoteMarker(todo.notes?.length ?? 0);
+		const modelBadges = formatTodoModelBadges(todo);
 		switch (todo.status) {
 			case "completed":
-				return theme.fg("success", `${prefix}${checkbox.checked} ${chalk.strikethrough(todo.content)}`) + marker;
+				return (
+					theme.fg("success", `${prefix}${checkbox.checked} ${chalk.strikethrough(todo.content)}${modelBadges}`) +
+					marker
+				);
 			case "in_progress":
-				return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
+				return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}${modelBadges}`) + marker;
 			case "abandoned":
-				return theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}`) + marker;
+				return (
+					theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}${modelBadges}`) +
+					marker
+				);
 			default:
-				if (matched) return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
-				return theme.fg("dim", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
+				if (matched)
+					return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}${modelBadges}`) + marker;
+				return theme.fg("dim", `${prefix}${checkbox.unchecked} ${todo.content}${modelBadges}`) + marker;
 		}
 	}
 
@@ -1744,10 +1830,34 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
 
+	#buildModelUsageSummaryLine(): string | undefined {
+		return this.#modelUsageSummaryRenderer.refresh();
+	}
+
+	refreshModelUsageSummary(): void {
+		this.#renderModelUsageSummary();
+	}
+
+	refreshMainModelUi(): void {
+		this.#mainModelUiRefreshCoordinator.refresh();
+	}
+
+	refreshAdvisorModelUi(): void {
+		this.#advisorModelUiRefreshCoordinator.refresh();
+	}
+
+	#renderModelUsageSummary(): void {
+		this.modelUsageContainer.clear();
+		const line = this.#buildModelUsageSummaryLine();
+		if (!line) return;
+		this.modelUsageContainer.addChild(new Text(line, 1, 0));
+	}
+
 	async #loadTodoList(): Promise<void> {
 		this.todoPhases = this.session.getTodoPhases();
 		this.#syncTodoAutoClearTimer();
 		this.#renderTodoList();
+		this.#renderModelUsageSummary();
 	}
 
 	async #getPlanFilePath(): Promise<string> {
@@ -1892,6 +2002,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 			try {
 				await this.session.setModelTemporary(resolved.model, planThinkingLevel);
+				this.refreshMainModelUi();
 			} catch (error) {
 				this.showWarning(
 					`Failed to switch to plan model for plan mode: ${error instanceof Error ? error.message : String(error)}`,
@@ -1899,6 +2010,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		} else if (planThinkingLevel) {
 			this.session.setThinkingLevel(planThinkingLevel);
+			this.refreshMainModelUi();
 		}
 	}
 
@@ -1909,6 +2021,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#pendingModelSwitch = undefined;
 		try {
 			await this.session.setModelTemporary(pending.model, pending.thinkingLevel);
+			this.refreshMainModelUi();
 		} catch (error) {
 			this.showWarning(
 				`Failed to switch model after streaming: ${error instanceof Error ? error.message : String(error)}`,
@@ -2095,10 +2208,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			// Same model — only thinking level may differ. Avoid setModelTemporary()
 			// which would reset provider-side sessions and break continuity.
 			this.session.setThinkingLevel(prev.thinkingLevel);
+			this.refreshMainModelUi();
 		} else if (this.session.isStreaming) {
 			this.#pendingModelSwitch = { model: prev.model, thinkingLevel: prev.thinkingLevel };
 		} else {
 			await this.session.setModelTemporary(prev.model, prev.thinkingLevel);
+			this.refreshMainModelUi();
 		}
 	}
 
@@ -2469,8 +2584,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!entry) return;
 		try {
 			await this.session.applyRoleModel(entry);
-			this.statusLine.invalidate();
-			this.updateEditorBorderColor();
+			this.refreshMainModelUi();
 			this.showStatus(`Continuing with ${entry.role}: ${entry.model.name || entry.model.id}`);
 		} catch (error) {
 			this.showWarning(

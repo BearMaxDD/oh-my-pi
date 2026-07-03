@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { tryRunRpcSkillCommand } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
 import { type CustomMessage, SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { removeWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
@@ -19,6 +20,7 @@ describe("tryRunRpcSkillCommand", () => {
 
 		const handled = await tryRunRpcSkillCommand(
 			{
+				settings: Settings.isolated(),
 				skillsSettings: { enableSkillCommands: true },
 				skills: [
 					{ name: "reviewer", description: "Review code", filePath: skillPath, baseDir: dir, source: "project" },
@@ -43,6 +45,7 @@ describe("tryRunRpcSkillCommand", () => {
 	test("ignores unknown skill commands so normal prompt handling can continue", async () => {
 		const handled = await tryRunRpcSkillCommand(
 			{
+				settings: Settings.isolated(),
 				skillsSettings: { enableSkillCommands: true },
 				skills: [],
 				async promptCustomMessage() {

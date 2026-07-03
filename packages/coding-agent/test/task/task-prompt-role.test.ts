@@ -37,3 +37,25 @@ describe("task tool description: role parameter", () => {
 		expect(out).toMatch(/tailor[^\n]*role/i);
 	});
 });
+
+describe("task tool description: modelRole parameter", () => {
+	it("documents `modelRole` in the batch parameter list", () => {
+		const out = render(true);
+		expect(out).toContain("`modelRole`:");
+	});
+
+	it("documents `modelRole` in the flat (single-spawn) parameter list", () => {
+		const out = render(false);
+		expect(out).toContain("`modelRole`:");
+	});
+
+	it("describes modelRole as model routing distinct from role", () => {
+		const out = render(true);
+		expect(out).toMatch(/model[ _-]?rout/i);
+	});
+
+	it("includes role-to-modelRole guidance", () => {
+		const out = render(true);
+		expect(out).toMatch(/role.to.modelRole/i);
+	});
+});

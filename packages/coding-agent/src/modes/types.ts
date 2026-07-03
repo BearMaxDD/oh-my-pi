@@ -69,11 +69,13 @@ export type SubmittedUserInput = {
 	started: boolean;
 };
 
-export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";
+export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
 export type TodoItem = {
+	id?: string;
 	content: string;
 	status: TodoStatus;
+	blockers?: string[];
 	details?: string;
 	notes?: string[];
 };
@@ -296,7 +298,10 @@ export interface InteractiveModeContext {
 	updateEditorTopBorder(): void;
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
 	syncRunningSubagentBadge(): void;
-	updateEditorBorderColor(): void;
+	updateEditorBorderColor(options?: { requestRender?: boolean }): void;
+	refreshModelUsageSummary(): void;
+	refreshMainModelUi(): void;
+	refreshAdvisorModelUi(): void;
 	rebuildChatFromMessages(): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;

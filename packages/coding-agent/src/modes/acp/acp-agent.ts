@@ -845,7 +845,12 @@ export class AcpAgent implements Agent {
 		if (!skill) {
 			return false;
 		}
-		const built = await buildSkillPromptMessage(skill, args);
+		const built = await buildSkillPromptMessage(skill, args, {
+			codebaseMemoryGate: {
+				enabled: record.session.settings.get("superpowers.codebaseMemoryGate.enabled") as boolean,
+				mode: record.session.settings.get("superpowers.codebaseMemoryGate.mode") as "off" | "advisory" | "required",
+			},
+		});
 		await record.session.promptCustomMessage({
 			customType: SKILL_PROMPT_MESSAGE_TYPE,
 			content: built.message,

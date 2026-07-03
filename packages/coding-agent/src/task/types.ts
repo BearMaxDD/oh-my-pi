@@ -2,6 +2,7 @@ import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import type { ModelAssignment } from "../modes/model-visibility";
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { NestedRepoPatch } from "./worktree";
 
@@ -9,15 +10,9 @@ import type { NestedRepoPatch } from "./worktree";
 export type AgentSource = "bundled" | "user" | "project";
 
 const parseNumber = (value: string | undefined, defaultValue: number): number => {
-	if (value) {
-		try {
-			const number = Number.parseInt(value, 10);
-			if (!Number.isNaN(number) && number > 0) {
-				return number;
-			}
-		} catch {}
-	}
-	return defaultValue;
+	if (value === undefined || value === "") return defaultValue;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : defaultValue;
 };
 
 /** Maximum output bytes per agent */
@@ -47,6 +42,22 @@ export interface SubagentProgressPayload {
 	sessionFile?: string;
 	/** See {@link SubagentLifecyclePayload.detached}. */
 	detached?: boolean;
+	/** Model role key used for routing this spawn. */
+	modelRole?: string;
+	/** The explicit model pattern requested before routing/fallback resolution. */
+	requestedModel?: string;
+	/** Whether the model fell back to the parent's active model due to auth failure. */
+	fallbackUsed?: boolean;
+	/** Advisor model attached to the live subagent session, when advisor is active. */
+	advisorModel?: ModelAssignment;
+	/** Ordered fallback model role names from routing resolution. */
+	fallbackModelRoles?: string[];
+	/** Unique, ordered model override patterns from routing resolution. */
+	modelOverrides?: string[];
+	/** Service tier assigned to this spawn. */
+	serviceTier?: string;
+	/** Thinking level assigned to this spawn. */
+	thinkingLevel?: string;
 }
 
 /** Payload emitted on TASK_SUBAGENT_EVENT_CHANNEL */
@@ -72,6 +83,22 @@ export interface SubagentLifecyclePayload {
 	 * unset — surfaces like the subagent HUD only list detached spawns.
 	 */
 	detached?: boolean;
+	/** Model role key used for routing this spawn. */
+	modelRole?: string;
+	/** The explicit model pattern requested before routing/fallback resolution. */
+	requestedModel?: string;
+	/** Whether the model fell back to the parent's active model due to auth failure. */
+	fallbackUsed?: boolean;
+	/** Advisor model attached to the live subagent session, when advisor is active. */
+	advisorModel?: ModelAssignment;
+	/** Ordered fallback model role names from routing resolution. */
+	fallbackModelRoles?: string[];
+	/** Unique, ordered model override patterns from routing resolution. */
+	modelOverrides?: string[];
+	/** Service tier assigned to this spawn. */
+	serviceTier?: string;
+	/** Thinking level assigned to this spawn. */
+	thinkingLevel?: string;
 }
 
 /** Display cap for a normalized one-line label (roster line, registry `displayName`, prompt field). */
@@ -81,33 +108,41 @@ export const ROLE_INPUT_MAX = 256;
 const ROLE_INPUT_SCHEMA = `string <= ${ROLE_INPUT_MAX}` as const;
 
 export const taskItemSchema = type({
+	"role?": ROLE_INPUT_SCHEMA,
+	"modelRole?": "string",
+	assignment: "string",
 	"id?": "string",
 	"description?": "string",
-	"role?": ROLE_INPUT_SCHEMA,
-	assignment: "string",
+	"required_skill_evidence?": "string[]",
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
+	"role?": ROLE_INPUT_SCHEMA,
+	"modelRole?": "string",
+	assignment: "string",
 	"id?": "string",
 	"description?": "string",
-	"role?": ROLE_INPUT_SCHEMA,
-	assignment: "string",
+	"required_skill_evidence?": "string[]",
 	"isolated?": "boolean",
 	"+": "delete",
 });
 
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
-	/** Stable agent id; default = generated AdjectiveNoun. */
-	id?: string;
-	/** UI label, not seen by the subagent. */
-	description?: string;
-	/** Specialist role/expertise this subagent embodies; shapes its system-prompt identity and display name. */
+	/** Specialist role/expertise for this spawn. */
 	role?: string;
-	/** The work; required by the schema. */
+	/** Machine routing role: selects model tier for this spawn; distinct from `role` (specialist identity). */
+	modelRole?: string;
+	/** Unique id for this task (auto-generated if omitted). */
+	id?: string;
+	/** Description for display / roster. */
+	description?: string;
+	/** Work to be done by the subagent. */
 	assignment?: string;
-	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
+	/** When true, spawn the agent in an isolated worktree. */
 	isolated?: boolean;
+	/** Required skill evidence tags for acceptance. */
+	required_skill_evidence?: string[];
 }
 
 export const taskSchema = type({
@@ -115,8 +150,10 @@ export const taskSchema = type({
 	"id?": "string",
 	"description?": "string",
 	"role?": ROLE_INPUT_SCHEMA,
+	"modelRole?": "string",
 	assignment: "string",
 	"isolated?": "boolean",
+	"required_skill_evidence?": "string[]",
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
@@ -124,7 +161,9 @@ const taskSchemaNoIsolation = type({
 	"id?": "string",
 	"description?": "string",
 	"role?": ROLE_INPUT_SCHEMA,
+	"modelRole?": "string",
 	assignment: "string",
+	"required_skill_evidence?": "string[]",
 	"+": "delete",
 });
 const taskSchemaBatch = type({
@@ -155,45 +194,36 @@ export function getTaskSchema(options: { isolationEnabled: boolean; batchEnabled
 
 /**
  * Runtime params union over both wire shapes. The model sees exactly one shape
- * (`{ agent, context, tasks[] }` when `task.batch` is on, `{ agent, ...item }`
- * otherwise); runtime stays permissive so internal callers and stale
- * transcripts using the flat form keep working under either setting.
+ * (the active schema) but the TS type must cover both because the TaskTool
+ * implementation has call-sites that destructure from both shapes in the same
+ * method. Fields that only appear on one shape are optional.
  */
 export interface TaskParams {
-	/** Agent type; required. */
 	agent?: string;
-	/** Stable agent id (flat form); default = generated AdjectiveNoun. */
-	id?: string;
-	/** UI label (flat form), not seen by the subagent. */
-	description?: string;
-	/** Specialist role/expertise this subagent embodies; shapes its system-prompt identity and display name. */
-	role?: string;
-	/** The work (flat form). */
-	assignment?: string;
-	/** Batch form (`task.batch`): one subagent per item. */
-	tasks?: TaskItem[];
-	/** Batch form: shared background prepended to every assignment; required by the batch schema. */
 	context?: string;
-	/** Run in an isolated worktree (flat form; per-item in batch form). */
+	id?: string;
+	role?: string;
+	modelRole?: string;
+	assignment?: string;
+	description?: string;
 	isolated?: boolean;
+	required_skill_evidence?: string[];
+	tasks?: TaskItem[];
 }
 
 /**
  * One-line, length-capped label safe for a single roster line, a registry
- * `displayName`, or a system-prompt field. Collapses every run of whitespace
- * AND control/format characters — including U+0085 NEL, ESC/ANSI, and the
- * zero-width separators that `\s` misses — to a single space, then caps length.
- * So untrusted text (a spawn `role`, a peer activity gist) can neither break the
- * line, inject prompt structure, nor smuggle terminal escapes. Caps at `max`
- * characters (clamped to >= 1; default `ROLE_LABEL_MAX`), appending an ellipsis when truncated.
+ * display, or a prompt field. Collapses whitespace and clips at `max` chars
+ * with a trailing ellipsis. Returns the empty string when the input is
+ * falsy or whitespace-only.
  */
 export function oneLineLabel(text: string, max = ROLE_LABEL_MAX): string {
-	const oneLine = text.replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim();
-	const cap = Math.max(1, max);
-	// Count/cut by code point, not UTF-16 code unit, so truncation can never
-	// split an astral character into a lone surrogate.
-	const chars = [...oneLine];
-	return chars.length > cap ? `${chars.slice(0, cap - 1).join("")}…` : oneLine;
+	const collapsed = text.replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim();
+	if (!collapsed) return "";
+	const codePoints = Array.from(collapsed);
+	if (codePoints.length <= max) return collapsed;
+	if (max <= 1) return "…";
+	return `${codePoints.slice(0, max - 1).join("")}…`;
 }
 
 /**
@@ -202,8 +232,8 @@ export function oneLineLabel(text: string, max = ROLE_LABEL_MAX): string {
  * back to the agent name.
  */
 export function resolveSubagentDisplayName(role: string | undefined, agentName: string): string {
-	const trimmed = role?.trim();
-	return trimmed ? oneLineLabel(trimmed) : agentName;
+	const label = role ? oneLineLabel(role) : "";
+	return label || agentName;
 }
 
 /**
@@ -218,25 +248,34 @@ export function canSpawnAtDepth(maxRecursionDepth: number, taskDepth: number): b
 /** A code review finding reported by the reviewer agent */
 export interface ReviewFinding {
 	title: string;
-	body: string;
-	priority: number;
-	confidence: number;
-	file_path: string;
-	line_start: number;
-	line_end: number;
+	/** Reviewer-agent JTD finding body. */
+	body?: string;
+	/** Numeric P0-P3 ordinal consumed by reviewer-agent JTD schemas. */
+	priority?: number;
+	confidence?: number;
+	file_path?: string;
+	line_start?: number;
+	line_end?: number;
+	/** Legacy review summary fields retained for existing consumers. */
+	severity?: "minor" | "major" | "critical";
+	description?: string;
+	path?: string;
+	lineNumber?: number;
+	lineStart?: number;
+	lineEnd?: number;
+	original?: string;
+	suggestion?: string;
 }
 
 /** Review summary submitted by the reviewer agent */
 export interface ReviewSummary {
-	overall_correctness: "correct" | "incorrect";
-	explanation: string;
-	confidence: number;
+	findings: ReviewFinding[];
 }
 
 /** Structured review data extracted from reviewer agent */
 export interface ReviewData {
+	summary?: string;
 	findings: ReviewFinding[];
-	summary?: ReviewSummary;
 }
 
 /** Agent definition (bundled or discovered) */
@@ -244,15 +283,14 @@ export interface AgentDefinition {
 	name: string;
 	description: string;
 	systemPrompt: string;
+	model?: string | string[];
 	tools?: string[];
-	spawns?: string[] | "*";
-	model?: string[];
+	spawns?: string | string[];
 	thinkingLevel?: ThinkingLevel;
 	output?: unknown;
-	blocking?: boolean;
-	autoloadSkills?: string[];
-	/** When `false`, the agent's `read` tool returns verbatim file content instead of structural summaries. */
 	readSummarize?: boolean;
+	autoloadSkills?: string[];
+	blocking?: boolean;
 	source: AgentSource;
 	filePath?: string;
 }
@@ -293,6 +331,22 @@ export interface AgentProgress {
 	modelOverride?: string | string[];
 	/** Resolved model display string in the form `<provider>/<id>`, optionally suffixed with `:<thinkingLevel>` when the level was set explicitly. Undefined when the model could not be resolved. */
 	resolvedModel?: string;
+	/** Model role key used for routing this spawn (e.g. "superpowers:tdd-writer"). */
+	modelRole?: string;
+	/** The explicit model pattern requested before routing/fallback resolution. */
+	requestedModel?: string;
+	/** Whether the model fell back to the parent's active model due to auth failure. */
+	fallbackUsed?: boolean;
+	/** Ordered fallback model role names from routing resolution. */
+	fallbackModelRoles?: string[];
+	/** Unique, ordered model override patterns from routing resolution. */
+	modelOverrides?: string[];
+	/** Service tier assigned to this spawn. */
+	serviceTier?: string;
+	/** Thinking level assigned to this spawn. */
+	thinkingLevel?: string;
+	/** Advisor model attached to the live subagent session, when advisor is active. */
+	advisorModel?: ModelAssignment;
 	/** Data extracted by registered subprocess tool handlers (keyed by tool name) */
 	extractedToolData?: Record<string, unknown[]>;
 	/**
@@ -355,6 +409,22 @@ export interface SingleResult {
 	modelOverride?: string | string[];
 	/** Resolved model display string in the form `<provider>/<id>`, optionally suffixed with `:<thinkingLevel>` when the level was set explicitly. Omitted from tool-result JSON when undefined to keep wire payloads small. */
 	resolvedModel?: string;
+	/** Model role key used for routing this spawn. */
+	modelRole?: string;
+	/** The explicit model pattern requested before routing/fallback resolution. */
+	requestedModel?: string;
+	/** Whether the model fell back to the parent's active model due to auth failure. */
+	fallbackUsed?: boolean;
+	/** Ordered fallback model role names from routing resolution. */
+	fallbackModelRoles?: string[];
+	/** Unique, ordered model override patterns from routing resolution. */
+	modelOverrides?: string[];
+	/** Service tier assigned to this spawn. */
+	serviceTier?: string;
+	/** Thinking level assigned to this spawn. */
+	thinkingLevel?: string;
+	/** Advisor model attached to the live subagent session, when advisor is active. */
+	advisorModel?: ModelAssignment;
 	error?: string;
 	aborted?: boolean;
 	abortReason?: string;
@@ -389,13 +459,12 @@ export interface TaskToolDetails {
 	projectAgentsDir: string | null;
 	results: SingleResult[];
 	totalDurationMs: number;
-	/** Aggregated usage across all subagents. */
 	usage?: Usage;
 	outputPaths?: string[];
 	progress?: AgentProgress[];
 	async?: {
 		state: "running" | "completed" | "failed";
 		jobId: string;
-		type: "task";
+		type: string;
 	};
 }

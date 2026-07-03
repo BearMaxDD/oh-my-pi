@@ -138,8 +138,22 @@ The automatic paths are intentionally different:
 - Serialization keeps the archive conversation-dense: tool results are truncated head+tail (default 2,000 chars at a 0.6 head ratio), tool-call argument values are capped per value (500) and per call (2,000), and tool output is printed in dim gray ink so conversation reads louder than tool noise. All budgets and the dimming are configurable via `SerializeOptions` (`toolResultMaxChars`, `toolArgMaxChars`, `toolCallMaxChars`, `truncateHeadRatio`, `dimToolResults`).
 - The snapcompact archive persists under `CompactionEntry.preserveData.snapcompact` as bounded source text plus rendered frames. On each context rebuild it is reconstructed into ordered compaction blocks: plain text at the oldest edge, an imaged middle, then plain text at the newest edge. The entry's `summary` is just the short resume lead-in plus the usual file-operation list.
 - Later compactions re-render from that bounded source text (`Archive.text`), not by carrying old PNGs forward blindly. `maxFrames` now defaults to `MAX_FRAMES_DEFAULT` (80) and acts only as an upper limit; when the imaged middle is large it foveates internally (HQ/LQ/HQ), while both chronological edges stay verbatim text.
-- No model, API key, or network is involved, so snapcompact is also safe for overflow recovery. It requires a vision-capable current model (`model.input` includes `"image"`); otherwise the run falls back to context-full and emits a warning notice (auto and manual paths). Manual `/compact` honors the strategy unless custom instructions are given (those imply a directed LLM summary).
+- No model, API key, or network is involved in the local archive pass. It requires a vision-capable current model (`model.input` includes `"image"`); ordinary manual and automatic paths can fall back to context-full when local snapcompact cannot run safely. Overflow/incomplete recovery uses context-full because the priority is to rebuild a retryable prompt instead of exercising local render blockers.
 - Rationale: the shape table comes from the snapcompact 200k-token evals in `packages/snapcompact`, where bitmap frames preserved QA recall at lower billed-token cost than raw text for vision-capable models.
+
+
+### Smart compaction router
+
+`compaction.strategy = "smart"` chooses the safest compaction path for the trigger:
+
+- ordinary `/compact`: prefer snapcompact when the active model supports image input and the conversation is safe to render; otherwise run the existing context-full summary chain;
+- `/compact soft`: force context-full and skip remote endpoints;
+- `/compact remote`: prefer remote/provider-native compaction and keep existing remote fallback behavior;
+- `/compact snapcompact`: strictly require local snapcompact and fail with `Use /compact or /compact soft` when local rendering is unsafe;
+- automatic threshold/idle: prefer snapcompact when safe, then context-full;
+- overflow/incomplete recovery: use context-full to avoid local snapcompact render blockers.
+
+Ordinary fallback notices never include `No LLM fallback was attempted`; default `/compact` and automatic recovery paths report the selected fallback route instead.
 
 ### Display transcript
 
@@ -406,7 +420,7 @@ Post-navigation event exposing new/old leaf and optional summary entry.
 From `settings-schema.ts`:
 
 - `compaction.enabled` = `true`
-- `compaction.strategy` = `"snapcompact"` (`"context-full"`, `"handoff"`, `"shake"`, and `"off"` are also supported)
+  - `compaction.strategy` = `"snapcompact"` (`"smart"`, `"context-full"`, `"handoff"`, `"shake"`, and `"off"` are also supported)
 - `compaction.reserveTokens` = `16384`
 - `compaction.keepRecentTokens` = `20000`
 - `compaction.autoContinue` = `true`

@@ -19,7 +19,7 @@ import {
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
 import { getModelMatchPreferences, resolveModelRoleValue } from "../../config/model-resolver";
-import { getKnownRoleIds, getRoleInfo, MODEL_ROLE_IDS, MODEL_ROLES } from "../../config/model-roles";
+import { getKnownRoleIds, getRoleInfo, MODEL_ROLE_IDS, MODEL_ROLES, type RoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
 import { type ThemeColor, theme } from "../../modes/theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
@@ -120,6 +120,18 @@ type CancelCallback = () => void;
 interface MenuRoleAction {
 	label: string;
 	role: string; // now accepts custom role strings
+}
+
+function formatRoleInfoForMenu(role: string, roleInfo: RoleInfo): string {
+	if (roleInfo.menuHintZh) {
+		const prefix = role.startsWith("superpowers:") ? role : roleInfo.tag || role;
+		return `${prefix} (${roleInfo.menuHintZh})`;
+	}
+	if (role.startsWith("superpowers:")) {
+		const name = roleInfo.description ? `${roleInfo.name}：${roleInfo.description}` : roleInfo.name;
+		return `${role} (${name})`;
+	}
+	return roleInfo.tag ? `${roleInfo.tag} (${roleInfo.name})` : roleInfo.name;
 }
 
 interface ProviderTabState {
@@ -297,7 +309,7 @@ export class ModelSelectorComponent extends Container {
 	#buildMenuRoleActions(): void {
 		this.#menuRoleActions = getKnownRoleIds(this.#settings).map(role => {
 			const roleInfo = getRoleInfo(role, this.#settings);
-			const roleLabel = roleInfo.tag ? `${roleInfo.tag} (${roleInfo.name})` : roleInfo.name;
+			const roleLabel = formatRoleInfoForMenu(role, roleInfo);
 			return {
 				label: `Set as ${roleLabel}`,
 				role,

@@ -2,13 +2,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Effort } from "@oh-my-pi/pi-ai";
-import {
-	detectMacOSAppearance,
-	MacAppearanceObserver,
-	type HighlightColors as NativeHighlightColors,
-	highlightCode as nativeHighlightCode,
-	supportsLanguage as nativeSupportsLanguage,
-} from "@oh-my-pi/pi-natives";
+import * as piNatives from "@oh-my-pi/pi-natives";
+
+type NativeHighlightColors = piNatives.HighlightColors;
+
 import type { EditorTheme, MarkdownTheme, SelectListTheme, SettingsListTheme, SymbolTheme } from "@oh-my-pi/pi-tui";
 import { adjustHsv, colorLuma, getCustomThemesDir, isEnoent, logger, relativeLuminance } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
@@ -2117,7 +2114,7 @@ function detectTerminalBackground(): "dark" | "light" {
 
 	// Tier 3: host macOS appearance for known-broken terminal paths only.
 	if (shouldUseMacOSAppearanceFallback()) {
-		const macAppearance = macOSReportedAppearance ?? detectMacOSAppearance();
+		const macAppearance = macOSReportedAppearance ?? piNatives.detectMacOSAppearance();
 		if (macAppearance) return macAppearance;
 	}
 
@@ -2479,8 +2476,8 @@ function startMacAppearanceObserver(): void {
 	stopMacAppearanceObserver();
 	if (!shouldUseMacOSAppearanceFallback()) return;
 	try {
-		macOSReportedAppearance = detectMacOSAppearance() ?? undefined;
-		macObserver = MacAppearanceObserver.start((err, appearance) => {
+		macOSReportedAppearance = piNatives.detectMacOSAppearance() ?? undefined;
+		macObserver = piNatives.MacAppearanceObserver.start((err, appearance) => {
 			if (!err && (appearance === "dark" || appearance === "light")) {
 				macOSReportedAppearance = appearance;
 				reevaluateAutoTheme("macOS fallback");
@@ -2765,7 +2762,7 @@ function highlightCached(code: string, validLang: string | undefined, highlightT
 	}
 	let highlighted: string;
 	try {
-		highlighted = nativeHighlightCode(code, validLang, getHighlightColors(highlightTheme));
+		highlighted = piNatives.highlightCode(code, validLang, getHighlightColors(highlightTheme));
 	} catch {
 		return null;
 	}
@@ -2778,7 +2775,7 @@ function highlightCached(code: string, validLang: string | undefined, highlightT
  * Returns array of highlighted lines.
  */
 export function highlightCode(code: string, lang?: string, highlightTheme: Theme = theme): string[] {
-	const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
+	const validLang = lang && piNatives.supportsLanguage(lang) ? lang : undefined;
 	const highlighted = highlightCached(code, validLang, highlightTheme);
 	// Always return a fresh array: callers (e.g. renderCodeCell) push extra lines
 	// onto the result, which would corrupt the cached string otherwise.
@@ -2887,7 +2884,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 					})
 			: undefined,
 		highlightCode: (code: string, lang?: string): string[] => {
-			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
+			const validLang = lang && piNatives.supportsLanguage(lang) ? lang : undefined;
 			const highlighted = highlightCached(code, validLang, theme);
 			if (highlighted !== null) return highlighted.split("\n");
 			return code.split("\n").map(line => theme.fg("mdCodeBlock", line));

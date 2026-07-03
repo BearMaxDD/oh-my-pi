@@ -97,6 +97,7 @@ describe("task.batch schema gating", () => {
 		expect(offProperties.context).toBeUndefined();
 		expect(offProperties.assignment).toBeDefined();
 		expect(offProperties.id).toBeDefined();
+		expect(offProperties.required_skill_evidence).toBeDefined();
 
 		const on = await TaskTool.create(createSession({ settings: { "task.batch": true } }));
 		const onProperties = getSchemaProperties(on);
@@ -110,6 +111,8 @@ describe("task.batch schema gating", () => {
 		const items = (onProperties.tasks as { items?: { properties?: Record<string, unknown> } }).items;
 		expect(items?.properties?.assignment).toBeDefined();
 		expect(items?.properties?.id).toBeDefined();
+		expect(items?.properties?.required_skill_evidence).toBeDefined();
+		expect(items?.properties?.modelRole).toBeDefined();
 	});
 
 	it("places isolated per item in the batch shape when isolation is enabled", async () => {
@@ -229,13 +232,22 @@ describe("task.batch spawning", () => {
 
 	it("spawns one background job per task item and forwards the shared context", async () => {
 		mockDiscovery();
-		const seen: Array<{ id?: string; context?: string; assignment?: string; parentAgentId?: string }> = [];
+		const seen: Array<{
+			id?: string;
+			context?: string;
+			assignment?: string;
+			parentAgentId?: string;
+			requiredSkillEvidence?: string[];
+			modelRole?: string;
+		}> = [];
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 			seen.push({
 				id: options.id,
 				context: options.context,
 				assignment: options.assignment,
 				parentAgentId: options.parentAgentId,
+				requiredSkillEvidence: options.requiredSkillEvidence,
+				modelRole: options.modelRole,
 			});
 			return makeResult(options.id ?? "?");
 		});
@@ -249,7 +261,13 @@ describe("task.batch spawning", () => {
 			agent: "task",
 			context: "# Goal\nShared background.",
 			tasks: [
-				{ id: "Alpha", description: "first", assignment: "Do A." },
+				{
+					id: "Alpha",
+					description: "first",
+					assignment: "Do A.",
+					required_skill_evidence: ["test-driven-development"],
+					modelRole: "superpowers:tdd-writer",
+				},
 				{ id: "Beta", assignment: "Do B." },
 			],
 		} as TaskParams);
@@ -278,6 +296,10 @@ describe("task.batch spawning", () => {
 			expect(spawn.context).toBe("# Goal\nShared background.");
 		}
 		expect(seen.map(spawn => spawn.assignment).sort()).toEqual(["Do A.", "Do B."]);
+		expect(seen.find(spawn => spawn.id === "Alpha")?.requiredSkillEvidence).toEqual(["test-driven-development"]);
+		expect(seen.find(spawn => spawn.id === "Beta")?.requiredSkillEvidence).toBeUndefined();
+		expect(seen.find(spawn => spawn.id === "Alpha")?.modelRole).toBe("superpowers:tdd-writer");
+		expect(seen.find(spawn => spawn.id === "Beta")?.modelRole).toBeUndefined();
 		// Every spawn is parented to the spawning agent (not to itself): the
 		// registry "of <parent>" link must be the caller, never the child's id.
 		for (const spawn of seen) expect(spawn.parentAgentId).toBe("ParentA");
@@ -332,6 +354,67 @@ describe("task.batch spawning", () => {
 		expect(job.status).toBe("completed");
 	});
 
+	it("forwards modelRole from flat-form params through to runSubprocess", async () => {
+		mockDiscovery();
+		let capturedModelRole: string | undefined;
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			capturedModelRole = options.modelRole;
+			return makeResult(options.id ?? "?");
+		});
+
+		const manager = createManager();
+		const tool = await TaskTool.create(
+			createSession({ manager, settings: { "async.enabled": true, "task.batch": false } }),
+		);
+
+		const result = await tool.execute("tc-flat-mr", {
+			agent: "task",
+			id: "FlatMR",
+			assignment: "Do it.",
+			modelRole: "superpowers:tdd-writer",
+		} as TaskParams);
+
+		const job = manager.getJob(result.details!.async!.jobId)!;
+		await job.promise;
+		expect(capturedModelRole).toBe("superpowers:tdd-writer");
+	});
+
+	it("honors task.agentModelOverrides through the TaskTool routing call", async () => {
+		mockDiscovery();
+		let capturedRequestedModel: string | undefined;
+		let capturedModelOverride: string | string[] | undefined;
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			capturedRequestedModel = options.requestedModel;
+			capturedModelOverride = options.modelOverride;
+			return makeResult(options.id ?? "?", {
+				requestedModel: options.requestedModel,
+			});
+		});
+
+		const manager = createManager();
+		const tool = await TaskTool.create(
+			createSession({
+				manager,
+				settings: {
+					"async.enabled": true,
+					"task.batch": false,
+					"task.agentModelOverrides": { task: "primary/agent-override" },
+				},
+			}),
+		);
+
+		const result = await tool.execute("tc-agent-override", {
+			agent: "task",
+			id: "AgentOverride",
+			assignment: "Use configured agent override.",
+		} as TaskParams);
+
+		const job = manager.getJob(result.details!.async!.jobId)!;
+		await job.promise;
+		expect(capturedRequestedModel).toBeUndefined();
+		expect(capturedModelOverride).toContain("primary/agent-override");
+	});
+
 	it("blocks batch execution when async.enabled is false even with a job manager", async () => {
 		mockDiscovery();
 		const seen: Array<{ id?: string; context?: string; assignment?: string }> = [];
@@ -363,5 +446,79 @@ describe("task.batch spawning", () => {
 			"# Goal\nShared synchronous context.",
 			"# Goal\nShared synchronous context.",
 		]);
+	});
+
+	it("routes each batch item with its own modelRole and exposes routing metadata in results", async () => {
+		mockDiscovery();
+		const seen: Array<{
+			id?: string;
+			modelRole?: string;
+			requestedModel?: string;
+		}> = [];
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			seen.push({
+				id: options.id,
+				modelRole: options.modelRole,
+				requestedModel: options.requestedModel,
+			});
+			return makeResult(options.id ?? "?", {
+				modelRole: options.modelRole,
+				requestedModel: options.requestedModel,
+			});
+		});
+
+		const manager = createManager();
+		const tool = await TaskTool.create(
+			createSession({
+				manager,
+				agentId: "ParentA",
+				settings: {
+					"async.enabled": true,
+					"task.batch": true,
+					modelRoles: {
+						"superpowers:tdd-writer": "openai/gpt-5.5:high",
+						"superpowers:implementer": "minimax-code-cn/MiniMax-M3",
+					},
+				},
+			}),
+		);
+
+		await tool.execute("tc-routing", {
+			agent: "task",
+			context: "# Goal\nRoute by model role.",
+			tasks: [
+				{
+					id: "TddWriter",
+					description: "tdd writer",
+					assignment: "Write tests.",
+					modelRole: "superpowers:tdd-writer",
+				},
+				{
+					id: "Implementer",
+					description: "implementer",
+					assignment: "Write code.",
+					modelRole: "superpowers:implementer",
+				},
+			],
+		} as TaskParams);
+
+		const tddJob = manager.getJob("TddWriter");
+		const implJob = manager.getJob("Implementer");
+		expect(tddJob).toBeDefined();
+		expect(implJob).toBeDefined();
+		await tddJob!.promise;
+		await implJob!.promise;
+
+		// modelRole is forwarded per item
+		const tddSpawn = seen.find(s => s.id === "TddWriter");
+		const implSpawn = seen.find(s => s.id === "Implementer");
+		expect(tddSpawn?.modelRole).toBe("superpowers:tdd-writer");
+		expect(implSpawn?.modelRole).toBe("superpowers:implementer");
+		// requestedModel should be the resolved model patterns from routing
+		expect(tddSpawn?.requestedModel).toBe("openai/gpt-5.5:high");
+		expect(implSpawn?.requestedModel).toBe("minimax-code-cn/MiniMax-M3");
+
+		// modelRole is only set on items that provide it
+		expect(seen.filter(s => s.modelRole).length).toBe(2);
 	});
 });

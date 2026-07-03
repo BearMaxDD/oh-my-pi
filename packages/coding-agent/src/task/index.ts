@@ -20,7 +20,6 @@ import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env, logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "..";
-import { resolveAgentModelPatterns } from "../config/model-resolver";
 import { MCPManager } from "../mcp/manager";
 import type { Theme } from "../modes/theme/theme";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
@@ -30,6 +29,7 @@ import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: 
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/irc";
 import { formatBytes, formatDuration } from "../tools/render-utils";
+import { resolveTaskModelRouting } from "./model-routing";
 import {
 	type AgentDefinition,
 	type AgentProgress,
@@ -303,7 +303,16 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if (Array.isArray(params.tasks) && params.tasks.length > 0) {
 		return params.tasks;
 	}
-	return [{ id: params.id, description: params.description, role: params.role, assignment: params.assignment }];
+	return [
+		{
+			id: params.id,
+			description: params.description,
+			role: params.role,
+			assignment: params.assignment,
+			required_skill_evidence: params.required_skill_evidence,
+			modelRole: params.modelRole,
+		},
+	];
 }
 
 /**
@@ -319,6 +328,8 @@ function spawnParamsFor(params: TaskParams, item: TaskItem): TaskParams {
 	if (item.description !== undefined) spawn.description = item.description;
 	if (item.role !== undefined) spawn.role = item.role;
 	if (item.assignment !== undefined) spawn.assignment = item.assignment;
+	if (item.required_skill_evidence !== undefined) spawn.required_skill_evidence = item.required_skill_evidence;
+	if (item.modelRole !== undefined) spawn.modelRole = item.modelRole;
 	if (params.context !== undefined) spawn.context = params.context;
 	if (item.isolated !== undefined) {
 		spawn.isolated = item.isolated;
@@ -1094,15 +1105,18 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 		// Apply per-agent model override from settings (highest priority)
 		const agentModelOverrides = this.session.settings.get("task.agentModelOverrides");
-		const settingsModelOverride = agentModelOverrides[agentName];
 		const parentActiveModelPattern = this.session.getActiveModelString?.();
-		const modelOverride = resolveAgentModelPatterns({
-			settingsOverride: settingsModelOverride,
+		const routing = resolveTaskModelRouting({
+			modelRole: params.modelRole,
+			role: params.role,
+			agentName,
+			agentModelOverrides,
 			agentModel: effectiveAgent.model,
 			settings: this.session.settings,
 			activeModelPattern: parentActiveModelPattern,
 			fallbackModelPattern: this.session.getModelString?.(),
 		});
+		const modelOverride = routing.modelOverrides;
 		const thinkingLevelOverride = effectiveAgent.thinkingLevel;
 
 		// Output schema priority: agent frontmatter > inherited parent session.
@@ -1227,6 +1241,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				cost: 0,
 				durationMs: 0,
 				modelOverride,
+				modelRole: routing.modelRole,
+				requestedModel: routing.requestedModel,
+				fallbackModelRoles: routing.fallbackModelRoles,
+				modelOverrides: routing.modelOverrides,
 				description: params.description,
 			};
 			const emitProgress = () => {
@@ -1253,6 +1271,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				planReference,
 				description: params.description,
 				role: params.role,
+				modelRole: routing.modelRole,
+				requestedModel: routing.requestedModel,
+				fallbackModelRoles: routing.fallbackModelRoles,
+				modelOverrides: routing.modelOverrides,
 				index: spawnIndex,
 				parentToolCallId: toolCallId,
 				detached,
@@ -1274,7 +1296,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					// Shallow snapshot; recentTools is mutated in place by the
 					// executor, the rest is reassigned or immutable. A deep clone
 					// here cost O(extractedToolData) per progress event.
-					latestProgress = { ...progress, recentTools: progress.recentTools.slice() };
+					// Preserve routing evidence fields not carried by executor progress.
+					latestProgress = {
+						...progress,
+						recentTools: progress.recentTools.slice(),
+						fallbackModelRoles: latestProgress.fallbackModelRoles,
+						modelOverrides: latestProgress.modelOverrides,
+						serviceTier: latestProgress.serviceTier,
+						thinkingLevel: latestProgress.thinkingLevel,
+					};
 					emitProgress();
 				},
 				authStorage: this.session.authStorage,
@@ -1284,6 +1314,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				contextFiles,
 				skills: availableSkills,
 				autoloadSkills: resolvedAutoloadSkills,
+				requiredSkillEvidence: params.required_skill_evidence,
 				workspaceTree: this.session.workspaceTree,
 				promptTemplates,
 				rules: this.session.rules,
@@ -1338,6 +1369,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							tokens: 0,
 							requests: 0,
 							modelOverride,
+							modelRole: routing.modelRole,
+							requestedModel: routing.requestedModel,
+							fallbackModelRoles: routing.fallbackModelRoles,
+							modelOverrides: routing.modelOverrides,
 							error: message,
 						};
 					},

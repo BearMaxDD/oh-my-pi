@@ -684,6 +684,24 @@ export function renderCall(args: TaskParams, options: TaskRenderOptions, theme: 
 }
 
 /**
+ * Format the model display label for a role-bound agent. Returns undefined when
+ * the agent has no modelRole (plain task scheduling — no change to existing
+ * behavior). Returns a Chinese-label string for role-bound agents showing the
+ * resolved model or a pending indicator.
+ */
+function formatRoleBoundModelLabel(
+	progress: Pick<AgentProgress, "modelRole" | "resolvedModel" | "fallbackUsed">,
+): string | undefined {
+	if (!progress.modelRole) return undefined;
+	if (progress.resolvedModel) {
+		return progress.fallbackUsed
+			? `模型：${progress.resolvedModel}（由 ${progress.modelRole} 回退）`
+			: `模型：${progress.resolvedModel}`;
+	}
+	return `模型：待解析（${progress.modelRole}）`;
+}
+
+/**
  * Render streaming progress for a single agent.
  */
 function renderAgentProgress(
@@ -756,6 +774,11 @@ function renderAgentProgress(
 		statusLine = appendAgentStats(statusLine, { ...progress, showResolvedModelBadge: showBadge }, theme);
 	} else if (progress.status === "completed") {
 		statusLine = appendAgentStats(statusLine, { ...progress, showResolvedModelBadge: showBadge }, theme);
+	}
+
+	const roleBoundModelLabel = formatRoleBoundModelLabel(progress);
+	if (roleBoundModelLabel) {
+		statusLine += `${theme.sep.dot}${theme.fg(progress.fallbackUsed ? "warning" : "muted", roleBoundModelLabel)}`;
 	}
 
 	lines.push(statusLine);
@@ -1053,6 +1076,10 @@ function renderAgentResult(
 		},
 		theme,
 	);
+	const roleBoundModelLabel = formatRoleBoundModelLabel(result);
+	if (roleBoundModelLabel) {
+		statusLine += `${theme.sep.dot}${theme.fg(result.fallbackUsed ? "warning" : "muted", roleBoundModelLabel)}`;
+	}
 	statusLine += `${theme.sep.dot}${theme.fg("dim", formatDuration(result.durationMs))}`;
 
 	if (result.truncated) {

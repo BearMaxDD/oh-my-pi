@@ -7,6 +7,7 @@
  */
 import { beforeAll, describe, expect, it } from "bun:test";
 import { renderSubagentHudLines } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { buildModelUsageSummaryLineForSessions } from "@oh-my-pi/pi-coding-agent/modes/model-visibility";
 import {
 	type ObservableSession,
 	SessionObserverRegistry,
@@ -99,6 +100,102 @@ describe("subagent HUD lines", () => {
 		expect(out).toContain("SchemaMigrator: Migrating the users table");
 	});
 
+	it("shows each running subagent execution model and advisor model", () => {
+		const out = render([
+			makeSession({
+				id: "Task5LatencyShards",
+				description: "Shard latency metrics",
+				progress: makeProgress({
+					id: "Task5LatencyShards",
+					description: "Shard latency metrics",
+					modelRole: "task",
+					resolvedModel: "deepseek/deepseek-r1",
+				}),
+				modelAssignment: {
+					executionModel: {
+						role: "task",
+						model: "deepseek/deepseek-r1",
+						displayName: "deepseek-r1",
+						source: "modelRoles",
+						scope: "current-run",
+					},
+					advisorModel: {
+						role: "advisor",
+						model: "openai/gpt-5.5",
+						displayName: "gpt-5.5",
+						source: "runtimeOverride",
+						scope: "current-run",
+					},
+				},
+			}),
+		]);
+
+		expect(out).toContain("Task5LatencyShards: Shard latency metrics");
+		expect(out).toContain("task deepseek-r1");
+		expect(out).toContain("advisor gpt-5.5*");
+	});
+
+	it("shows fallback model from progress when explicit modelAssignment is absent", () => {
+		const out = render([
+			makeSession({
+				id: "FallbackWorker",
+				description: "Run task after auth fallback",
+				progress: makeProgress({
+					id: "FallbackWorker",
+					description: "Run task after auth fallback",
+					modelRole: "task",
+					requestedModel: "deepseek/deepseek-r1",
+					resolvedModel: "openai/gpt-5.5",
+					fallbackUsed: true,
+				}),
+			}),
+		]);
+
+		expect(out).toContain("FallbackWorker: Run task after auth fallback");
+		expect(out).toContain("task gpt-5.5 fallback");
+	});
+
+	it("does not infer a modelRoles badge from resolved progress without a model role", () => {
+		const out = render([
+			makeSession({
+				id: "PlainWorker",
+				description: "Run ordinary task",
+				progress: makeProgress({
+					id: "PlainWorker",
+					description: "Run ordinary task",
+					resolvedModel: "deepseek/deepseek-r1",
+				}),
+			}),
+		]);
+
+		expect(out).toContain("PlainWorker: Run ordinary task");
+		expect(out).not.toContain("task deepseek-r1");
+	});
+
+	it("keeps model badges visible when truncating long descriptions", () => {
+		const out = render(
+			[
+				makeSession({
+					id: "LongWorker",
+					description: `start ${"x".repeat(300)} end`,
+					progress: makeProgress({
+						id: "LongWorker",
+						modelRole: "task",
+						resolvedModel: "deepseek/deepseek-r1",
+					}),
+				}),
+			],
+			60,
+		);
+
+		expect(out).toContain("LongWorker:");
+		expect(out).toContain("task deepseek-r1");
+		expect(out).not.toContain("end");
+		for (const line of out.split("\n")) {
+			expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
+		}
+	});
+
 	it("only shows active subagents and clears once everything finished", () => {
 		const finishedStates = ["completed", "failed", "aborted"] as const;
 		const sessions: ObservableSession[] = [
@@ -153,6 +250,36 @@ describe("subagent HUD lines", () => {
 		expect(out).toContain("Detached: background work");
 		expect(out).toContain("FromProgress: background work");
 		expect(out).not.toContain("Inline");
+	});
+
+	it("threads advisor model from progress payloads into the model usage summary", () => {
+		const eventBus = new EventBus();
+		const registry = new SessionObserverRegistry();
+		registry.subscribeToEventBus(eventBus);
+
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("AdvisorWorker", 0, "background work", true));
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
+			...makeProgressPayload("AdvisorWorker", 0, "background work", true),
+			progress: makeProgress({
+				id: "AdvisorWorker",
+				index: 0,
+				description: "background work",
+				task: "background work",
+				modelRole: "task",
+				resolvedModel: "deepseek/deepseek-r1",
+				advisorModel: {
+					role: "advisor",
+					model: "openai/gpt-5.5",
+					displayName: "gpt-5.5",
+					source: "runtimeOverride",
+					scope: "current-run",
+				},
+			}),
+		} satisfies SubagentProgressPayload);
+
+		const line = buildModelUsageSummaryLineForSessions("openai/gpt-5.5", registry.getSessions());
+
+		expect(line).toBe("Models  gpt-5.5: planner, advisor(AdvisorWorker) · deepseek-r1: task(AdvisorWorker)");
 	});
 
 	it("renders nested ids as a breadcrumb and truncates long descriptions to the viewport", () => {

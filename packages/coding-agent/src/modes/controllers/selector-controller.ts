@@ -527,8 +527,7 @@ export class SelectorController {
 							if (isAuto) {
 								this.ctx.session.setThinkingLevel(AUTO_THINKING, true);
 							}
-							this.ctx.statusLine.invalidate();
-							this.ctx.updateEditorBorderColor();
+							this.ctx.refreshMainModelUi();
 							const roleSelectorHint = this.ctx.keybindings.getKeys("app.model.select")[0] ?? "Alt+M";
 							this.ctx.showStatus(
 								`Session-only model: ${selector ?? model.id}. Use ${roleSelectorHint} or /model for roles.`,
@@ -547,10 +546,28 @@ export class SelectorController {
 							} else if (concreteThinking && concreteThinking !== ThinkingLevel.Inherit) {
 								this.ctx.session.setThinkingLevel(concreteThinking);
 							}
-							this.ctx.statusLine.invalidate();
-							this.ctx.updateEditorBorderColor();
+							this.ctx.refreshMainModelUi();
 							this.ctx.showStatus(`Default model: ${selector ?? model.id}`);
 							// Don't call done() - selector stays open for role assignment
+						} else if (role === "advisor") {
+							const roleValue = formatModelSelectorValue(
+								selector ?? `${model.provider}/${model.id}`,
+								concreteThinking,
+							);
+							const active = this.ctx.session.switchAdvisorModel(roleValue, {
+								scope: "current-run",
+								reasonCode: "quality_risk",
+								evidence: ["Selected from model role picker"],
+							});
+							const roleInfo = getRoleInfo(role, settings);
+							const roleLabel = roleInfo?.name ?? role;
+							this.ctx.refreshAdvisorModelUi();
+							this.ctx.showStatus(
+								active
+									? `${roleLabel} model: ${selector ?? model.id}`
+									: `${roleLabel} model override: ${selector ?? model.id}`,
+							);
+							// Don't call done() - selector stays open
 						} else {
 							// Other roles (smol, slow): just update settings, not current model
 							this.ctx.settings.setModelRole(

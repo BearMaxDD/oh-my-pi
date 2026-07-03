@@ -361,6 +361,84 @@ describe("task progress rendering", () => {
 		expect(collapsed).toContain("5 succeeded");
 		expect(collapsed).toContain("1 failed");
 	});
+
+	it("renders finalized role-bound tasks with fallback source", async () => {
+		const theme = (await getThemeByName("dark"))!;
+		const options: RenderResultOptions = { expanded: false, isPartial: false, spinnerFrame: 0 };
+		const result = finishedResult({
+			id: "SpecReview",
+			description: "规格合规审查",
+			modelRole: "superpowers:spec-reviewer",
+			resolvedModel: "openai/gpt-5.5:xhigh",
+			fallbackUsed: true,
+		});
+
+		const stripped = Bun.stripANSI(
+			findRow(
+				taskToolRenderer.renderResult(
+					{
+						content: [{ type: "text", text: "done" }],
+						details: { projectAgentsDir: null, results: [result], totalDurationMs: 0 },
+					},
+					options,
+					theme,
+				),
+				"SpecReview",
+			),
+		);
+
+		expect(stripped).toContain("模型：openai/gpt-5.5:xhigh（由 superpowers:spec-reviewer 回退）");
+	});
+
+	it("renders pending role-bound tasks with unresolved modelRole", async () => {
+		const theme = (await getThemeByName("dark"))!;
+		const options: RenderResultOptions = { expanded: false, isPartial: true, spinnerFrame: 0 };
+		const progress = runningProgress({
+			id: "TddWriter",
+			status: "pending",
+			description: "编写失败测试",
+			modelRole: "superpowers:tdd-writer",
+		});
+
+		const stripped = Bun.stripANSI(
+			findRow(
+				taskToolRenderer.renderResult(
+					{ content: [{ type: "text", text: "" }], details: detailsFor(progress) },
+					options,
+					theme,
+				),
+				"TddWriter",
+			),
+		);
+
+		expect(stripped).toContain("模型：待解析（superpowers:tdd-writer）");
+	});
+
+	it("renders resolved model and fallback source for completed role-bound tasks", async () => {
+		const theme = (await getThemeByName("dark"))!;
+		const options: RenderResultOptions = { expanded: false, isPartial: true, spinnerFrame: 0 };
+		const progress = runningProgress({
+			id: "SpecReview",
+			status: "completed",
+			description: "规格合规审查",
+			modelRole: "superpowers:spec-reviewer",
+			resolvedModel: "openai/gpt-5.5:xhigh",
+			fallbackUsed: true,
+		});
+
+		const stripped = Bun.stripANSI(
+			findRow(
+				taskToolRenderer.renderResult(
+					{ content: [{ type: "text", text: "" }], details: detailsFor(progress) },
+					options,
+					theme,
+				),
+				"SpecReview",
+			),
+		);
+
+		expect(stripped).toContain("模型：openai/gpt-5.5:xhigh（由 superpowers:spec-reviewer 回退）");
+	});
 });
 
 describe("task result detail-less state", () => {

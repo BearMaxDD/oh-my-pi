@@ -92,6 +92,15 @@ const CONDITIONS: Record<string, () => boolean> = {
 			return false;
 		}
 	},
+	advisorAnyEnabled: () => {
+		try {
+			return (
+				Settings.instance.get("advisor.enabled") === true || Settings.instance.get("advisor.subagents") === true
+			);
+		} catch {
+			return false;
+		}
+	},
 	hindsightActive: () => {
 		try {
 			return Settings.instance.get("memory.backend") === "hindsight";

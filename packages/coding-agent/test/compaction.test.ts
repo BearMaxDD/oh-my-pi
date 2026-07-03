@@ -8,9 +8,11 @@ import {
 	compactionContextTokens,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateTokens,
+	exceedsHardContextCeiling,
 	findCutPoint,
 	getLastAssistantUsage,
 	prepareCompaction,
+	resolveHardCeilingTokens,
 	shouldCompact,
 } from "@oh-my-pi/pi-agent-core/compaction/compaction";
 import * as ai from "@oh-my-pi/pi-ai";
@@ -286,6 +288,33 @@ describe("shouldCompact", () => {
 		};
 
 		expect(shouldCompact(95000, 100000, settings)).toBe(false);
+	});
+});
+
+describe("hard context ceiling", () => {
+	it("defaults to a 95 percent provider-request safety ceiling", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			reserveTokens: 10000,
+			keepRecentTokens: 20000,
+		};
+
+		expect(resolveHardCeilingTokens(100_000, settings)).toBe(95_000);
+		expect(exceedsHardContextCeiling(94_999, 100_000, settings)).toBe(false);
+		expect(exceedsHardContextCeiling(95_000, 100_000, settings)).toBe(true);
+	});
+
+	it("keeps the hard ceiling independent from fixed maintenance thresholds", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			thresholdTokens: 99_999,
+			hardCeilingPercent: 95,
+			reserveTokens: 10000,
+			keepRecentTokens: 20000,
+		};
+
+		expect(shouldCompact(95_000, 100_000, settings)).toBe(false);
+		expect(exceedsHardContextCeiling(95_000, 100_000, settings)).toBe(true);
 	});
 });
 

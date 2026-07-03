@@ -660,6 +660,36 @@ describe("ACP event mapper", () => {
 		expect(update.content).toEqual([{ type: "content", content: { type: "text", text: "hello from stdout" } }]);
 	});
 
+	it("maps blocked todo tool results to pending ACP plan entries", () => {
+		const updates = mapAgentSessionEventToAcpSessionUpdates(
+			{
+				type: "tool_execution_end",
+				toolCallId: "tc-todo-blocked",
+				toolName: "todo",
+				isError: false,
+				result: {
+					content: [{ type: "text", text: "Remaining items (1):" }],
+					details: {
+						phases: [
+							{
+								name: "Task 7",
+								tasks: [{ content: "Repair Mill feedback", status: "blocked" }],
+							},
+						],
+					},
+				},
+			} as AgentSessionEvent,
+			"session-1",
+		);
+
+		expect(updates).toHaveLength(2);
+		expectAcpNotifications(updates);
+		const planUpdate = updates.find(update => update.update.sessionUpdate === "plan")?.update as
+			| { entries?: Array<{ content: string; priority: string; status: string }> }
+			| undefined;
+		expect(planUpdate?.entries).toEqual([{ content: "Repair Mill feedback", priority: "medium", status: "pending" }]);
+	});
+
 	it("embeds only terminal content from direct terminalId", () => {
 		const updates = mapAgentSessionEventToAcpSessionUpdates(
 			{

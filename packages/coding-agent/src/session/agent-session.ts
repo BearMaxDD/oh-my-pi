@@ -57,10 +57,12 @@ import {
 	DEFAULT_SHAKE_CONFIG,
 	effectiveReserveTokens,
 	estimateTokens,
+	exceedsHardContextCeiling,
 	generateBranchSummary,
 	generateHandoffFromContext,
 	prepareCompaction,
 	renderHandoffPrompt,
+	resolveHardCeilingTokens,
 	resolveThresholdTokens,
 	type SessionEntry,
 	type SessionMessageEntry,
@@ -151,6 +153,7 @@ import { type AsyncJob, type AsyncJobDeliveryState, AsyncJobManager } from "../a
 import { classifyDifficulty } from "../auto-thinking/classifier";
 import { reset as resetCapabilities } from "../capability";
 import type { Rule } from "../capability/rule";
+import type { PlanRunSessionSnapshot } from "../codex-plan-run/types";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import {
@@ -222,6 +225,7 @@ import { IrcBus, type IrcMessage } from "../irc/bus";
 import { resolveMemoryBackend } from "../memory-backend";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
+import { createModelAssignment, type ModelAssignment } from "../modes/model-visibility";
 import { containsOrchestrate, ORCHESTRATE_NOTICE } from "../modes/orchestrate";
 import { theme } from "../modes/theme/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
@@ -357,17 +361,21 @@ export type AgentSessionEvent =
 	| {
 			type: "auto_compaction_start";
 			reason: "threshold" | "overflow" | "idle" | "incomplete";
-			action: "context-full" | "handoff" | "shake" | "snapcompact";
+			action: "smart" | "context-full" | "handoff" | "shake" | "snapcompact" | "emergency-context-full";
+			selectedAction?: "snapcompact" | "context-full" | "emergency-context-full";
+			routeReason?: string;
 	  }
 	| {
 			type: "auto_compaction_end";
-			action: "context-full" | "handoff" | "shake" | "snapcompact";
+			action: "smart" | "context-full" | "handoff" | "shake" | "snapcompact" | "emergency-context-full";
 			result: CompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;
 			errorMessage?: string;
 			/** True when compaction was skipped for a benign reason (no model, no candidates, nothing to compact). */
 			skipped?: boolean;
+			selectedAction?: "snapcompact" | "context-full" | "emergency-context-full";
+			routeReason?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
@@ -418,6 +426,26 @@ const COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION: CompactionCheckResult = {
 	continuationScheduled: false,
 	automaticContinuationBlocked: true,
 };
+
+/** Reason a compaction pass was triggered. */
+type CompactionTriggerReason = "manual" | "threshold" | "idle" | "overflow" | "incomplete";
+/** Resolved /compact subcommand intent (no mode = configured behavior). */
+type CompactCommandIntent = "default" | "soft" | "remote" | "snapcompact";
+/** Why a snapcompact attempt failed locally. */
+type SnapcompactFallbackReason =
+	| "text_only_model"
+	| "high_non_ascii"
+	| "frame_budget_exhausted"
+	| "projected_over_budget"
+	| "overflow_recovery"
+	| "local_render_error";
+/** Result of a local snapcompact attempt with actionable detail. */
+type SnapcompactAttempt =
+	| { kind: "success"; result: snapcompact.CompactionResult }
+	| { kind: "fallback"; reason: SnapcompactFallbackReason; message: string }
+	| { kind: "strict-failure"; error: Error };
+/** Whether the snapcompact caller permits LLM fallback on local blockers. */
+type SnapcompactAttemptMode = "fallback-enabled" | "strict";
 
 /**
  * Per-turn prune cache window. A tool result whose all-message suffix exceeds
@@ -727,6 +755,23 @@ export interface AdvisorStats {
 		assistant: number;
 		total: number;
 	};
+}
+
+export type AdvisorModelSwitchScope = "current-task" | "current-run" | "session";
+
+export type AdvisorModelSwitchReason =
+	| "quality_risk"
+	| "advisor_failure"
+	| "context_pressure"
+	| "timeout"
+	| "cost_control"
+	| "pre_acceptance_review"
+	| "credential_unavailable";
+
+export interface AdvisorModelSwitchOptions {
+	scope?: AdvisorModelSwitchScope;
+	reasonCode?: AdvisorModelSwitchReason;
+	evidence?: string[];
 }
 
 export interface FreshSessionResult {
@@ -1221,6 +1266,7 @@ export class AgentSession {
 	#goalRuntime: GoalRuntime;
 	#advisorRuntime?: AdvisorRuntime;
 	#advisorEnabled = false;
+	#advisorRuntimeOverrideRoleValue: string | undefined;
 	/** The advisor's own agent, retained so `/dump advisor` can serialize its transcript. Undefined when no advisor is active. */
 	#advisorAgent?: Agent;
 	#advisorAdviseTool?: AdviseTool;
@@ -1272,6 +1318,7 @@ export class AgentSession {
 	 */
 	#todoReminderAwaitingProgress = false;
 	#todoPhases: TodoPhase[] = [];
+	#planRunSnapshot: PlanRunSessionSnapshot | undefined;
 	#toolChoiceQueue = new ToolChoiceQueue();
 
 	// Bash execution state
@@ -1816,7 +1863,7 @@ export class AgentSession {
 			},
 		});
 
-		this.#advisorEnabled = this.settings.get("advisor.enabled") as boolean;
+		this.#advisorEnabled = this.#resolveAdvisorEnabledForAgentKind();
 		if (this.#advisorEnabled) this.#buildAdvisorRuntime();
 
 		// Always subscribe to agent events for internal handling
@@ -1832,6 +1879,12 @@ export class AgentSession {
 		const immuneTurns = this.settings.get("advisor.immuneTurns") as number;
 		if (!Number.isFinite(immuneTurns) || immuneTurns <= 0) return 0;
 		return Math.trunc(immuneTurns);
+	}
+
+	#resolveAdvisorEnabledForAgentKind(): boolean {
+		return this.#agentKind === "main"
+			? (this.settings.get("advisor.enabled") as boolean)
+			: (this.settings.get("advisor.subagents") as boolean);
 	}
 
 	#isAdvisorInterruptImmuneTurnActive(): boolean {
@@ -1888,7 +1941,6 @@ export class AgentSession {
 		if (this.#isDisposed) return false;
 		if (this.#advisorRuntime) return true;
 		if (!this.#advisorEnabled) return false;
-		if (this.#agentKind !== "main" && !this.settings.get("advisor.subagents")) return false;
 
 		const advisorSel = resolveAdvisorRoleSelection(
 			this.settings,
@@ -4475,6 +4527,8 @@ export class AgentSession {
 				type: "auto_compaction_start",
 				reason: event.reason,
 				action: event.action,
+				selectedAction: event.selectedAction,
+				routeReason: event.routeReason,
 			});
 		} else if (event.type === "auto_compaction_end") {
 			await this.#extensionRunner.emit({
@@ -4485,6 +4539,8 @@ export class AgentSession {
 				willRetry: event.willRetry,
 				errorMessage: event.errorMessage,
 				skipped: event.skipped,
+				selectedAction: event.selectedAction,
+				routeReason: event.routeReason,
 			});
 		} else if (event.type === "auto_retry_start") {
 			await this.#extensionRunner.emit({
@@ -6605,7 +6661,10 @@ export class AgentSession {
 				}
 			}
 
-			await this.#runPrePromptCompactionIfNeeded(messages);
+			const canSubmitPrompt = await this.#runPrePromptCompactionIfNeeded(messages);
+			if (!canSubmitPrompt) {
+				return;
+			}
 			if (this.#promptGeneration !== generation) {
 				return;
 			}
@@ -7227,6 +7286,16 @@ export class AgentSession {
 
 	setTodoPhases(phases: TodoPhase[]): void {
 		this.#todoPhases = this.#cloneTodoPhases(phases);
+		this.#planRunSnapshot = undefined;
+	}
+
+	getPlanRunSnapshot(): PlanRunSessionSnapshot | undefined {
+		return this.#planRunSnapshot ? structuredClone(this.#planRunSnapshot) : undefined;
+	}
+
+	setPlanRunSnapshot(snapshot: PlanRunSessionSnapshot | undefined): void {
+		this.#planRunSnapshot = snapshot ? structuredClone(snapshot) : undefined;
+		this.#todoPhases = this.#cloneTodoPhases(snapshot?.todoSnapshot?.phases ?? []);
 	}
 
 	#syncTodoPhasesFromBranch(): void {
@@ -7242,7 +7311,13 @@ export class AgentSession {
 	#cloneTodoPhases(phases: TodoPhase[]): TodoPhase[] {
 		return phases.map(phase => ({
 			name: phase.name,
-			tasks: phase.tasks.map(task => ({ content: task.content, status: task.status })),
+			tasks: phase.tasks.map(task => ({
+				...(task.id ? { id: task.id } : {}),
+				content: task.content,
+				status: task.status,
+				...(task.blockers ? { blockers: [...task.blockers] } : {}),
+				...(task.modelAssignment !== undefined ? { modelAssignment: task.modelAssignment } : {}),
+			})),
 		}));
 	}
 
@@ -8337,33 +8412,29 @@ export class AgentSession {
 
 			const compactionPrep = await this.#prepareCompactionFromHooks(preparation, hookCompaction);
 
+			const commandIntent: CompactCommandIntent = compactMode?.name ?? "default";
+			const snapcompactMode: SnapcompactAttemptMode =
+				commandIntent === "snapcompact" ? "strict" : "fallback-enabled";
+
 			// Strategy honored on manual /compact too. Custom instructions imply a
 			// directed LLM summary; a text-only model cannot read snapcompact frames.
-			// When snapcompact itself was requested, fail locally instead of silently
-			// converting the "no LLM call" path into a provider-backed summary.
 			const wantsSnapcompact =
 				compactionPrep.kind !== "fromHook" && effectiveSettings.strategy === "snapcompact" && !customInstructions;
-			const snapcompactReady = wantsSnapcompact;
-			if (wantsSnapcompact && !this.model.input.includes("image")) {
-				this.emitNotice(
-					"warning",
-					`snapcompact needs a vision-capable model (${this.model.id} is text-only)`,
-					"compaction",
-				);
-				throw new Error(`snapcompact cannot run locally: ${this.model.id} is text-only.`);
-			} else if (snapcompactReady) {
-				const text = snapcompact.serializeConversation(convertToLlm(preparation.messagesToSummarize));
-				const renderScan = snapcompact.scanRenderability(text);
-				if (!renderScan.isSafe) {
-					const percent = (renderScan.unrenderableRatio * 100).toFixed(1);
+
+			let snapcompactResult: snapcompact.CompactionResult | undefined;
+			if (wantsSnapcompact) {
+				const attempt = await this.#trySnapcompact(preparation, effectiveSettings, snapcompactMode, "manual");
+				if (attempt.kind === "strict-failure") {
+					this.emitNotice("warning", attempt.error.message, "compaction");
+					throw attempt.error;
+				} else if (attempt.kind === "fallback") {
 					this.emitNotice(
 						"warning",
-						`snapcompact disabled: high non-ASCII rate detected (${percent}%). No LLM fallback was attempted.`,
+						this.#formatSnapcompactFallbackNotice(attempt.reason, attempt.message),
 						"compaction",
 					);
-					throw new Error(
-						`snapcompact cannot render this conversation locally: high non-ASCII rate detected (${percent}%).`,
-					);
+				} else {
+					snapcompactResult = attempt.result;
 				}
 			}
 
@@ -8372,49 +8443,6 @@ export class AgentSession {
 			let firstKeptEntryId: string;
 			let tokensBefore: number;
 			let details: unknown;
-
-			// Snapcompact runs locally first. The frame cap is sized from the live
-			// model window via #computeSnapcompactMaxFrames so the post-render context
-			// fits without the warning loop (issue #3247). Zero-frame budget now fails
-			// the snapcompact request locally rather than falling back to an LLM call.
-			let snapcompactResult: snapcompact.CompactionResult | undefined;
-			if (snapcompactReady) {
-				const maxFrames = this.#computeSnapcompactMaxFrames(preparation, effectiveSettings);
-				if (maxFrames < 1) {
-					logger.warn("Snapcompact skipped: kept history alone exceeds the context budget", {
-						model: this.model?.id,
-					});
-					this.emitNotice(
-						"warning",
-						"snapcompact: kept history alone exceeds the context budget. No LLM fallback was attempted.",
-						"compaction",
-					);
-					throw new Error("snapcompact cannot run locally: kept history alone exceeds the context budget.");
-				} else {
-					snapcompactResult = await snapcompact.compact(preparation, {
-						convertToLlm,
-						model: this.model,
-						shape: snapcompact.resolveShape(this.model, this.settings.get("snapcompact.shape")),
-						maxFrames,
-					});
-					const ctxWindow = this.model?.contextWindow ?? 0;
-					const budget =
-						ctxWindow > 0
-							? ctxWindow - effectiveReserveTokens(ctxWindow, effectiveSettings)
-							: Number.POSITIVE_INFINITY;
-					if (this.#projectSnapcompactContextTokens(preparation, snapcompactResult) > budget) {
-						logger.warn("Snapcompact still overflows the window after frame-budget sizing", {
-							model: this.model?.id,
-						});
-						this.emitNotice(
-							"warning",
-							"snapcompact could not bring the context under the limit. No LLM fallback was attempted.",
-							"compaction",
-						);
-						throw new Error("snapcompact could not bring the context under the limit locally.");
-					}
-				}
-			}
 
 			if (compactionPrep.kind === "fromHook") {
 				summary = compactionPrep.summary;
@@ -8429,7 +8457,10 @@ export class AgentSession {
 				firstKeptEntryId = snapcompactResult.firstKeptEntryId;
 				tokensBefore = snapcompactResult.tokensBefore;
 				details = snapcompactResult.details;
-				preserveData = { ...(compactionPrep.preserveData ?? {}), ...(snapcompactResult.preserveData ?? {}) };
+				preserveData = {
+					...(compactionPrep.preserveData ?? {}),
+					...(snapcompactResult.preserveData ?? {}),
+				};
 			} else {
 				// Generate compaction result. Only convert known abort-shaped
 				// rejections (AbortError raised while the abort signal is set,
@@ -8804,26 +8835,50 @@ export class AgentSession {
 		return compactionContextTokens(breakdown?.usedTokens ?? 0, localEstimate);
 	}
 
-	async #runPrePromptCompactionIfNeeded(messages: AgentMessage[]): Promise<void> {
+	#formatHardContextCeilingNotice(contextTokens: number, contextWindow: number, settings: CompactionSettings): string {
+		const hardCeilingTokens = resolveHardCeilingTokens(contextWindow, settings);
+		const percent = contextWindow > 0 ? ((contextTokens / contextWindow) * 100).toFixed(1) : "unknown";
+		const ceilingPercent = contextWindow > 0 ? ((hardCeilingTokens / contextWindow) * 100).toFixed(1) : "unknown";
+		return `Context is still at ${percent}% after maintenance, above the ${ceilingPercent}% hard ceiling. Blocking the provider request to avoid context overflow; shrink the pending input or large tool output, or switch to a larger-context model.`;
+	}
+
+	async #runPrePromptCompactionIfNeeded(messages: AgentMessage[]): Promise<boolean> {
 		const model = this.model;
-		if (!model) return;
+		if (!model) return true;
 		const contextWindow = model.contextWindow ?? 0;
-		if (contextWindow <= 0) return;
+		if (contextWindow <= 0) return true;
 		const compactionSettings = this.settings.getGroup("compaction");
 		const contextTokens = this.#estimatePrePromptContextTokens(messages, contextWindow);
-		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) return;
+		const shouldRunMaintenance =
+			shouldCompact(contextTokens, contextWindow, compactionSettings) ||
+			exceedsHardContextCeiling(contextTokens, contextWindow, compactionSettings);
+		if (!shouldRunMaintenance) return true;
 
 		// Auto-promote first: switching to a larger-context model avoids compacting
 		// the history at all. The post-turn threshold path already promotes before
 		// compacting; without this, the pre-prompt path would pre-empt promotion and
 		// compact (snapcompact/summary) a session that should have just been promoted.
 		if (await this.#promoteContextModel()) {
+			const promotedModel = this.model;
+			const promotedContextWindow = promotedModel?.contextWindow ?? 0;
+			if (promotedContextWindow > 0) {
+				const promotedSettings = this.settings.getGroup("compaction");
+				const promotedContextTokens = this.#estimatePrePromptContextTokens(messages, promotedContextWindow);
+				if (exceedsHardContextCeiling(promotedContextTokens, promotedContextWindow, promotedSettings)) {
+					this.emitNotice(
+						"warning",
+						this.#formatHardContextCeilingNotice(promotedContextTokens, promotedContextWindow, promotedSettings),
+						"compaction",
+					);
+					return false;
+				}
+			}
 			logger.debug("Pre-prompt context promotion avoided compaction", {
 				contextTokens,
 				contextWindow,
 				model: `${model.provider}/${model.id}`,
 			});
-			return;
+			return true;
 		}
 
 		logger.debug("Pre-prompt context maintenance triggered by pending prompt size", {
@@ -8835,6 +8890,18 @@ export class AgentSession {
 			autoContinue: false,
 			triggerContextTokens: contextTokens,
 		});
+		const postContextWindow = this.model?.contextWindow ?? contextWindow;
+		const postSettings = this.settings.getGroup("compaction");
+		const postContextTokens = this.#estimatePrePromptContextTokens(messages, postContextWindow);
+		if (exceedsHardContextCeiling(postContextTokens, postContextWindow, postSettings)) {
+			this.emitNotice(
+				"warning",
+				this.#formatHardContextCeilingNotice(postContextTokens, postContextWindow, postSettings),
+				"compaction",
+			);
+			return false;
+		}
+		return true;
 	}
 
 	/**
@@ -10274,6 +10341,141 @@ export class AgentSession {
 	 * ~402k frame-token projection always overflows any sub-1M-token window
 	 * (issue #3247).
 	 */
+
+	/**
+	 * Format a snapcompact fallback notice for the user. The returned string
+	 * contains "falling back to context-full compaction" and never mentions
+	 * "No LLM fallback was attempted".
+	 */
+	#formatSnapcompactFallbackNotice(_reason: SnapcompactFallbackReason, message: string): string {
+		return `${message} — falling back to context-full compaction.`;
+	}
+
+	/**
+	 * Build a strict-mode error for snapcompact blockers. The error message
+	 * includes actionable advice about using /compact or /compact soft.
+	 */
+	#buildStrictSnapcompactError(_reason: SnapcompactFallbackReason, message: string): Error {
+		return new Error(`${message} Use /compact or /compact soft to run LLM summary compaction.`);
+	}
+
+	/**
+	 * Try to run snapcompact locally, returning a structured result that distinguishes
+	 * success, fallback-eligible blocker, and strict failure (for explicit /compact snapcompact).
+	 *
+	 * @param preparation - Compaction preparation context
+	 * @param settings - Effective compaction settings for this invocation
+	 * @param mode - Whether fallback to LLM summary is allowed
+	 * @param _triggerReason - Reason the compaction was triggered
+	 */
+	async #trySnapcompact(
+		preparation: CompactionPreparation,
+		settings: CompactionSettings,
+		mode: SnapcompactAttemptMode,
+		_triggerReason: CompactionTriggerReason,
+	): Promise<SnapcompactAttempt> {
+		// Text-only model check
+		if (!this.model?.input.includes("image")) {
+			const msg = `snapcompact cannot run locally: ${this.model?.id ?? "unknown"} is text-only.`;
+			if (mode === "strict") {
+				return {
+					kind: "strict-failure",
+					error: this.#buildStrictSnapcompactError("text_only_model", msg),
+				};
+			}
+			return {
+				kind: "fallback",
+				reason: "text_only_model",
+				message: `snapcompact needs a vision-capable model (${this.model?.id ?? "unknown"} is text-only)`,
+			};
+		}
+
+		// Renderability scan — uses both messagesToSummarize and turnPrefixMessages
+		// for parity with the auto-compaction path.
+		const text = snapcompact.serializeConversation(
+			convertToLlm(preparation.messagesToSummarize.concat(preparation.turnPrefixMessages)),
+		);
+		const renderScan = snapcompact.scanRenderability(text);
+		if (!renderScan.isSafe) {
+			const percent = (renderScan.unrenderableRatio * 100).toFixed(1);
+			const msg = `snapcompact cannot render this conversation locally: high non-ASCII rate detected (${percent}%).`;
+			if (mode === "strict") {
+				return {
+					kind: "strict-failure",
+					error: this.#buildStrictSnapcompactError("high_non_ascii", msg),
+				};
+			}
+			return {
+				kind: "fallback",
+				reason: "high_non_ascii",
+				message: `High non-ASCII rate detected (${percent}%)`,
+			};
+		}
+
+		// Frame budget check — zero frames means kept history alone overflow the window
+		const maxFrames = this.#computeSnapcompactMaxFrames(preparation, settings);
+		if (maxFrames < 1) {
+			const msg = "snapcompact cannot run locally: kept history alone exceeds the context budget.";
+			if (mode === "strict") {
+				return {
+					kind: "strict-failure",
+					error: this.#buildStrictSnapcompactError("frame_budget_exhausted", msg),
+				};
+			}
+			return {
+				kind: "fallback",
+				reason: "frame_budget_exhausted",
+				message: "Kept history alone exceeds the context budget",
+			};
+		}
+
+		// Run snapcompact
+		try {
+			const result = await snapcompact.compact(preparation, {
+				convertToLlm,
+				model: this.model!,
+				shape: snapcompact.resolveShape(this.model!, this.settings.get("snapcompact.shape")),
+				maxFrames,
+			});
+
+			// Post-compaction budget projection
+			const ctxWindow = this.model?.contextWindow ?? 0;
+			const budget =
+				ctxWindow > 0 ? ctxWindow - effectiveReserveTokens(ctxWindow, settings) : Number.POSITIVE_INFINITY;
+			if (this.#projectSnapcompactContextTokens(preparation, result) > budget) {
+				const msg = "snapcompact could not bring the context under the limit locally.";
+				if (mode === "strict") {
+					return {
+						kind: "strict-failure",
+						error: this.#buildStrictSnapcompactError("projected_over_budget", msg),
+					};
+				}
+				return {
+					kind: "fallback",
+					reason: "projected_over_budget",
+					message: "Snapcompact could not bring the context under the limit",
+				};
+			}
+
+			return {
+				kind: "success",
+				result,
+			};
+		} catch (err) {
+			const errMsg = err instanceof Error ? err.message : String(err);
+			if (mode === "strict") {
+				return {
+					kind: "strict-failure",
+					error: this.#buildStrictSnapcompactError("local_render_error", `Local snapcompact failed: ${errMsg}`),
+				};
+			}
+			return {
+				kind: "fallback",
+				reason: "local_render_error",
+				message: `Local snapcompact failed: ${errMsg}`,
+			};
+		}
+	}
 	#computeSnapcompactMaxFrames(preparation: CompactionPreparation, settings: CompactionSettings): number {
 		const ctxWindow = this.model?.contextWindow ?? 0;
 		if (ctxWindow <= 0) return snapcompact.MAX_FRAMES_DEFAULT;
@@ -10492,14 +10694,32 @@ export class AgentSession {
 		// "overflow" forces context-full because the input itself is broken — a handoff
 		// LLM call would hit the same overflow. "incomplete" is an output-side problem,
 		// so a handoff request on the existing context is still viable. Snapcompact is
-		// a local-only strategy: if it cannot run, report the local blocker instead of
-		// silently swapping in a provider-backed summary.
-		let action: "context-full" | "handoff" | "snapcompact" =
-			compactionSettings.strategy === "snapcompact"
-				? "snapcompact"
-				: compactionSettings.strategy === "handoff" && reason !== "overflow" && !suppressHandoff
-					? "handoff"
+		// a local-only strategy used with fallback-enabled mode in auto-compaction.
+		// "smart" strategy prefers snapcompact when safe, falling back to context-full.
+		const configuredStrategy = compactionSettings.strategy;
+		const smartFallbackEnabled = compactionSettings.smartFallback !== false;
+		const preferSnapcompactWhenSafe = compactionSettings.preferSnapcompactWhenSafe !== false;
+
+		let selectedAction: "snapcompact" | "context-full" | "emergency-context-full" | undefined;
+
+		let action: "context-full" | "handoff" | "snapcompact" | "emergency-context-full" =
+			configuredStrategy === "handoff" && reason !== "overflow" && !suppressHandoff
+				? "handoff"
+				: (configuredStrategy === "smart" && preferSnapcompactWhenSafe) ||
+						(configuredStrategy === "snapcompact" &&
+							smartFallbackEnabled &&
+							reason !== "overflow" &&
+							reason !== "incomplete")
+					? "snapcompact"
 					: "context-full";
+		let routeReason: string | undefined =
+			reason === "overflow" && (configuredStrategy === "smart" || configuredStrategy === "snapcompact")
+				? "overflow_recovery"
+				: undefined;
+		if (routeReason === "overflow_recovery") {
+			selectedAction = "context-full";
+			action = "context-full";
+		}
 		// Abort any older auto-compaction before installing this run's controller.
 		this.#autoCompactionAbortController?.abort();
 		const autoCompactionAbortController = new AbortController();
@@ -10527,6 +10747,8 @@ export class AgentSession {
 							result: undefined,
 							aborted: true,
 							willRetry: false,
+							selectedAction,
+							routeReason,
 						});
 						return COMPACTION_CHECK_NONE;
 					}
@@ -10534,14 +10756,14 @@ export class AgentSession {
 						reason,
 					});
 					action = "context-full";
-				}
-				if (handoffResult) {
 					await this.#emitSessionEvent({
 						type: "auto_compaction_end",
 						action,
 						result: undefined,
 						aborted: false,
 						willRetry: false,
+						selectedAction,
+						routeReason,
 					});
 					const continuationScheduled = !autoCompactionSignal.aborted && reason !== "idle" && shouldAutoContinue;
 					if (continuationScheduled) {
@@ -10559,11 +10781,14 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 					skipped: true,
+					selectedAction,
+					routeReason,
 				});
 				return COMPACTION_CHECK_NONE;
 			}
 
 			const availableModels = this.#modelRegistry.getAvailable();
+
 			if (availableModels.length === 0) {
 				await this.#emitSessionEvent({
 					type: "auto_compaction_end",
@@ -10572,6 +10797,8 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 					skipped: true,
+					selectedAction,
+					routeReason,
 				});
 				return COMPACTION_CHECK_NONE;
 			}
@@ -10587,6 +10814,8 @@ export class AgentSession {
 					aborted: false,
 					willRetry: false,
 					skipped: true,
+					selectedAction,
+					routeReason,
 				});
 				if (!willRetry && this.agent.hasQueuedMessages()) {
 					this.#scheduleAgentContinue({
@@ -10619,6 +10848,8 @@ export class AgentSession {
 						result: undefined,
 						aborted: true,
 						willRetry: false,
+						selectedAction,
+						routeReason,
 					});
 					return COMPACTION_CHECK_NONE;
 				}
@@ -10641,80 +10872,36 @@ export class AgentSession {
 			// + a summary message carrying the imaged archive at FRAME_TOKEN_ESTIMATE
 			// per frame; #computeSnapcompactMaxFrames sizes the frame cap from the
 			// live window so we don't run snapcompact just to overflow every threshold
-			// tick. Any local blocker fails the snapcompact maintenance pass rather
-			// than falling back to a provider-backed LLM summary.
-			let snapcompactResult: snapcompact.CompactionResult | undefined;
+			// tick. Auto-compaction uses fallback-enabled mode, so local blockers
+			// route to context-full LLM compaction instead of failing the pass.
+			let snapcompactAttempt: SnapcompactAttempt | undefined;
 			if (action === "snapcompact" && compactionPrep.kind !== "fromHook") {
-				if (!this.model?.input.includes("image")) {
-					logger.warn("Snapcompact compaction requires a vision-capable model", {
-						model: this.model?.id,
-					});
-					this.emitNotice(
-						"warning",
-						`snapcompact needs a vision-capable model (${this.model?.id ?? "unknown"} is text-only). No LLM fallback was attempted.`,
-						"compaction",
-					);
-					throw new Error(`snapcompact cannot run locally: ${this.model?.id ?? "unknown"} is text-only.`);
-				}
-				const text = snapcompact.serializeConversation(
-					convertToLlm(preparation.messagesToSummarize.concat(preparation.turnPrefixMessages)),
-				);
-				const renderScan = snapcompact.scanRenderability(text);
-				if (!renderScan.isSafe) {
-					const percent = (renderScan.unrenderableRatio * 100).toFixed(1);
-					logger.warn("Snapcompact disabled: high non-ASCII rate detected", {
-						model: this.model?.id,
-						unrenderableRatio: renderScan.unrenderableRatio,
-					});
-					this.emitNotice(
-						"warning",
-						`snapcompact disabled: high non-ASCII rate detected (${percent}%). No LLM fallback was attempted.`,
-						"compaction",
-					);
-					throw new Error(
-						`snapcompact cannot render this conversation locally: high non-ASCII rate detected (${percent}%).`,
-					);
-				}
-				const maxFrames = this.#computeSnapcompactMaxFrames(preparation, compactionSettings);
-				if (maxFrames < 1) {
-					logger.warn("Snapcompact skipped: kept history alone exceeds the context budget", {
-						model: this.model?.id,
-					});
-					this.emitNotice(
-						"warning",
-						"snapcompact: kept history alone exceeds the context budget. No LLM fallback was attempted.",
-						"compaction",
-					);
-					throw new Error("snapcompact cannot run locally: kept history alone exceeds the context budget.");
-				}
-				snapcompactResult = await snapcompact.compact(preparation, {
-					convertToLlm,
-					model: this.model,
-					shape: snapcompact.resolveShape(this.model, this.settings.get("snapcompact.shape")),
-					maxFrames,
-				});
-
-				if (snapcompactResult) {
-					const ctxWindow = this.model?.contextWindow ?? 0;
-					const budget =
-						ctxWindow > 0
-							? ctxWindow - effectiveReserveTokens(ctxWindow, compactionSettings)
-							: Number.POSITIVE_INFINITY;
-					const projected = this.#projectSnapcompactContextTokens(preparation, snapcompactResult);
-					if (projected > budget) {
-						logger.warn("Snapcompact still overflows the window after frame-budget sizing", {
-							model: this.model?.id,
-							projected,
-							budget,
-						});
-						this.emitNotice(
-							"warning",
-							"snapcompact could not bring the context under the limit. No LLM fallback was attempted.",
-							"compaction",
-						);
-						throw new Error("snapcompact could not bring the context under the limit locally.");
+				const snapcompactMode: SnapcompactAttemptMode = smartFallbackEnabled ? "fallback-enabled" : "strict";
+				snapcompactAttempt = await this.#trySnapcompact(preparation, compactionSettings, snapcompactMode, reason);
+				if (snapcompactAttempt.kind === "fallback") {
+					if (routeReason === undefined) {
+						routeReason = snapcompactAttempt.reason;
 					}
+					selectedAction = "context-full";
+					this.emitNotice(
+						"warning",
+						this.#formatSnapcompactFallbackNotice(snapcompactAttempt.reason, snapcompactAttempt.message),
+						"compaction",
+					);
+					action = "context-full";
+				} else if (snapcompactAttempt.kind === "strict-failure") {
+					throw snapcompactAttempt.error;
 				}
+				// success -> handled below via snapcompactAttempt.kind === "success"
+			}
+
+			// Overflow recovery emits a formatted notice before the context-full path.
+			if (routeReason === "overflow_recovery") {
+				this.emitNotice(
+					"warning",
+					this.#formatSnapcompactFallbackNotice("overflow_recovery", "overflow recovery selected context-full"),
+					"compaction",
+				);
 			}
 
 			if (compactionPrep.kind === "fromHook") {
@@ -10724,13 +10911,18 @@ export class AgentSession {
 				tokensBefore = compactionPrep.tokensBefore;
 				details = compactionPrep.details;
 				preserveData = compactionPrep.preserveData;
-			} else if (snapcompactResult) {
-				summary = snapcompactResult.summary;
-				shortSummary = snapcompactResult.shortSummary;
-				firstKeptEntryId = snapcompactResult.firstKeptEntryId;
-				tokensBefore = snapcompactResult.tokensBefore;
-				details = snapcompactResult.details;
-				preserveData = { ...(compactionPrep.preserveData ?? {}), ...(snapcompactResult.preserveData ?? {}) };
+			} else if (snapcompactAttempt?.kind === "success") {
+				fromExtension = false;
+				selectedAction = "snapcompact";
+				summary = snapcompactAttempt.result.summary;
+				shortSummary = snapcompactAttempt.result.shortSummary;
+				firstKeptEntryId = snapcompactAttempt.result.firstKeptEntryId;
+				tokensBefore = snapcompactAttempt.result.tokensBefore;
+				details = snapcompactAttempt.result.details;
+				preserveData = {
+					...(compactionPrep.preserveData ?? {}),
+					...(snapcompactAttempt.result.preserveData ?? {}),
+				};
 			} else {
 				const candidates = this.#getCompactionModelCandidates(availableModels);
 				const retrySettings = this.settings.getGroup("retry");
@@ -10861,6 +11053,8 @@ export class AgentSession {
 					result: undefined,
 					aborted: true,
 					willRetry: false,
+					selectedAction,
+					routeReason,
 				});
 				return COMPACTION_CHECK_NONE;
 			}
@@ -10906,7 +11100,6 @@ export class AgentSession {
 				details,
 				preserveData,
 			};
-			await this.#emitSessionEvent({ type: "auto_compaction_end", action, result, aborted: false, willRetry });
 
 			// Post-maintenance progress guard. Snapcompact can project over budget and
 			// fall back to a context-full summary; the summarizer keeps `keepRecentTokens`
@@ -10923,6 +11116,7 @@ export class AgentSession {
 			// too little for that path to proceed is a dead-end: warn once so the user
 			// understands why maintenance paused instead of silently looping.
 			let noProgressDeadEnd = false;
+			let emergencyNoProgress = false;
 
 			if (willRetry) {
 				const messages = this.agent.state.messages;
@@ -10951,6 +11145,12 @@ export class AgentSession {
 					continuationScheduled = true;
 				} else {
 					noProgressDeadEnd = true;
+					emergencyNoProgress = reason === "overflow" && compactionSettings.emergencyRetryDropOldest !== false;
+					if (emergencyNoProgress) {
+						action = "emergency-context-full";
+						selectedAction = "emergency-context-full";
+						routeReason = "no_progress_after_context_full";
+					}
 				}
 			} else if (reason !== "idle") {
 				// Mirror the shake recovery-band check: only auto-continue when compaction
@@ -10982,12 +11182,20 @@ export class AgentSession {
 			}
 
 			if (noProgressDeadEnd) {
-				this.emitNotice(
-					"warning",
-					"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. The most recent turn alone is too large to reduce further; shrink it (e.g. clear large tool output) or switch to a larger-context model.",
-					"compaction",
-				);
+				const noProgressMessage = emergencyNoProgress
+					? "Emergency context-full could not create retry headroom — pausing automatic recovery to avoid a compaction loop. The most recent turn or preserved state still exceeds the usable context window; shrink large tool output or switch to a larger-context model."
+					: "Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. The most recent turn alone is too large to reduce further; shrink it (e.g. clear large tool output) or switch to a larger-context model.";
+				this.emitNotice("warning", noProgressMessage, "compaction");
 			}
+			await this.#emitSessionEvent({
+				type: "auto_compaction_end",
+				action,
+				result,
+				aborted: false,
+				willRetry,
+				selectedAction,
+				routeReason,
+			});
 			if (continuationScheduled) return COMPACTION_CHECK_CONTINUATION;
 			return noProgressDeadEnd ? COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION : COMPACTION_CHECK_NONE;
 		} catch (error) {
@@ -10998,6 +11206,8 @@ export class AgentSession {
 					result: undefined,
 					aborted: true,
 					willRetry: false,
+					selectedAction,
+					routeReason,
 				});
 				return COMPACTION_CHECK_NONE;
 			}
@@ -11014,6 +11224,8 @@ export class AgentSession {
 						: reason === "incomplete"
 							? `Incomplete response recovery failed: ${errorMessage}`
 							: `Auto-compaction failed: ${errorMessage}`,
+				selectedAction,
+				routeReason,
 			});
 		} finally {
 			if (this.#autoCompactionAbortController === autoCompactionAbortController) {
@@ -13738,6 +13950,32 @@ export class AgentSession {
 	}
 
 	/**
+	 * Switch the advisor role model for this live session/run without persisting
+	 * a global `modelRoles.advisor` change. The old advisor runtime is disposed
+	 * and a fresh runtime is built from the new role selection so the advisor
+	 * does not keep reviewing with stale model context.
+	 *
+	 * @returns true when the advisor is actively running after the switch.
+	 */
+	switchAdvisorModel(modelRoleValue: string, options: AdvisorModelSwitchOptions = {}): boolean {
+		const previousModel = this.#advisorAgent?.state.model;
+		this.#advisorRuntimeOverrideRoleValue = modelRoleValue;
+		this.settings.overrideModelRoles({ advisor: modelRoleValue });
+		this.#stopAdvisorRuntime();
+		const active = this.#advisorEnabled ? this.#buildAdvisorRuntime(true) : false;
+		const nextModel = this.#advisorAgent?.state.model;
+		logger.debug("advisor model switch applied", {
+			from: previousModel ? `${previousModel.provider}/${previousModel.id}` : undefined,
+			to: nextModel ? `${nextModel.provider}/${nextModel.id}` : modelRoleValue,
+			scope: options.scope ?? "current-run",
+			reasonCode: options.reasonCode,
+			evidenceCount: options.evidence?.length ?? 0,
+			active,
+		});
+		return active;
+	}
+
+	/**
 	 * Toggle the advisor setting and start/stop the runtime accordingly.
 	 *
 	 * @returns true when the advisor is actively running after the call.
@@ -13755,12 +13993,28 @@ export class AgentSession {
 
 	/**
 	 * Whether a live advisor agent is attached to this session. True only when
-	 * `advisor.enabled` is set AND a model resolved for the `advisor` role AND
-	 * the advisor applies to this agent kind — i.e. the actual runtime exists,
-	 * not merely the setting. Drives the status-line badge and `/dump advisor`.
+	 * this agent kind's advisor setting is enabled AND a model resolved for the
+	 * `advisor` role — i.e. the actual runtime exists, not merely the setting.
+	 * Drives the status-line badge and `/dump advisor`.
 	 */
 	isAdvisorActive(): boolean {
 		return this.#advisorAgent !== undefined;
+	}
+
+	getAdvisorModelAssignment(): ModelAssignment | undefined {
+		const model = this.#advisorAgent?.state.model;
+		if (!model) return undefined;
+		const advisorOverride = this.settings.getModelRoleOverride("advisor")?.trim();
+		const source =
+			advisorOverride && advisorOverride === this.#advisorRuntimeOverrideRoleValue
+				? "runtimeOverride"
+				: "modelRoles";
+		return createModelAssignment({
+			role: "advisor",
+			model: formatModelStringWithRouting(model),
+			source,
+			scope: "current-run",
+		});
 	}
 
 	/**

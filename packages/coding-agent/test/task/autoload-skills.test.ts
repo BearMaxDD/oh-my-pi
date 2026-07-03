@@ -54,6 +54,9 @@ function createMockSession(
 		getLastAssistantMessage: () => state.messages[state.messages.length - 1],
 		abort: async () => {},
 		dispose: async () => {},
+		settings: {
+			get: () => undefined,
+		} as unknown as Settings,
 	} as unknown as AgentSession;
 }
 

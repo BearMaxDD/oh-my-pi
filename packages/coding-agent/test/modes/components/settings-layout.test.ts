@@ -70,21 +70,25 @@ describe("settings layout", () => {
 		});
 	});
 
-	it("hides advisor dependent settings when advisor is disabled", () => {
+	it("shows the subagent advisor setting independently from the main advisor toggle", () => {
 		const advisorDependentPaths: SettingPath[] = ["advisor.subagents", "advisor.syncBacklog", "advisor.immuneTurns"];
 		const advisorDependentPathSet = new Set(advisorDependentPaths);
 		const defs = getSettingsForTab("model").filter(def => advisorDependentPathSet.has(def.path));
 
 		expect(defs.map(def => def.path)).toEqual(advisorDependentPaths);
-		for (const def of defs) {
-			expect(def.condition?.()).toBe(false);
-		}
+		expect(defs.find(def => def.path === "advisor.subagents")?.condition?.()).not.toBe(false);
+		expect(defs.find(def => def.path === "advisor.syncBacklog")?.condition?.()).toBe(true);
+		expect(defs.find(def => def.path === "advisor.immuneTurns")?.condition?.()).toBe(true);
+
+		Settings.instance.set("advisor.subagents", false);
+
+		expect(defs.find(def => def.path === "advisor.syncBacklog")?.condition?.()).toBe(false);
+		expect(defs.find(def => def.path === "advisor.immuneTurns")?.condition?.()).toBe(false);
 
 		Settings.instance.set("advisor.enabled", true);
 
-		for (const def of defs) {
-			expect(def.condition?.()).toBe(true);
-		}
+		expect(defs.find(def => def.path === "advisor.syncBacklog")?.condition?.()).toBe(true);
+		expect(defs.find(def => def.path === "advisor.immuneTurns")?.condition?.()).toBe(true);
 	});
 
 	it("shows provider request limits as a providers services submenu setting", () => {

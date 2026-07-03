@@ -58,7 +58,7 @@ export const COMPACT_MODES: readonly CompactModeDef[] = [
 	},
 	{
 		name: "snapcompact",
-		description: "Archive history onto dense bitmap images the model reads back (no LLM call)",
+		description: "Strictly archive history onto dense bitmap images the model reads back (no LLM fallback)",
 		overrides: { strategy: "snapcompact" },
 		rejectsFocus: true,
 	},

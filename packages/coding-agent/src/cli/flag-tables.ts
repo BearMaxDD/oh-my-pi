@@ -204,6 +204,16 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 			});
 		}
 	},
+	"--code-writes": (result, value, deps) => {
+		if (value === "normal" || value === "subagent-preferred" || value === "subagent-only") {
+			result.codeWrites = value;
+		} else {
+			deps.logger.warn("Invalid value passed to --code-writes", {
+				value,
+				validValues: ["normal", "subagent-preferred", "subagent-only"],
+			});
+		}
+	},
 };
 
 /**
