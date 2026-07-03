@@ -22,6 +22,111 @@
   Fork of <a href="https://github.com/badlogic/pi-mono">Pi</a> by <a href="https://github.com/mariozechner">@mariozechner</a> 
 </p>
 
+## BearMaxDD / OMP Custom 版说明
+
+这是 BearMaxDD 维护的个人魔改版 OMP 分支，长期分支为 `mima/omp-custom`。
+
+本分支的维护目标是：**保留个人工作流增强，同时持续跟随官方 `can1357/oh-my-pi` 更新**。官方代码通过 `upstream` 同步，个人 fork 通过 `origin` 推送。
+
+当前状态：
+
+- Fork 仓库：`https://github.com/BearMaxDD/oh-my-pi`
+- 长期魔改分支：`mima/omp-custom`
+- 当前官方基线：`upstream/main` / `v16.3.3`
+- 本地魔改导入点：`4772b1573 chore: import local OMP customizations`
+- 当前合并点：`edda6f526 merge upstream v16.3.3 into custom OMP branch`
+
+### 这个版本实现的主要功能
+
+本分支在官方 OMP 基础上，重点增加和强化以下能力：
+
+- **Autonomous Plan Run 工作流**
+  - 增加 `/plan-run <request>` 自主执行入口。
+  - 引入 Plan Execution Book、Plan Run Manifest、阶段 ledger、完成证据、acceptance review、repair loop 等执行闭环。
+  - 让主会话负责规划、门禁、最终验收，子代理负责具体实现任务。
+
+- **Superpowers 角色化执行体系**
+  - 增加 `acceptance`、`task`、`advisor` 以及多组 `superpowers:*` 模型角色。
+  - 支持 TDD Writer、Implementer、Test Runner、Spec Reviewer、Quality Reviewer、Acceptance、Runtime Simulator、Security Reviewer、Release Auditor 等角色。
+  - 模型选择器和状态展示会显示角色说明、模型分配和执行职责。
+
+- **codebase-memory 图谱优先上下文**
+  - 增加 codebase-memory 自动上下文注入。
+  - 对代码理解、计划、调试、实现、审查类请求，优先提示使用 `search_graph`、`trace_path`、`get_code_snippet`、`query_graph` 等图谱工具。
+  - 增加 Superpowers codebase-memory gate，可配置为 `off`、`advisory` 或 `required`。
+
+- **子代理执行与审查门禁**
+  - 增强 `task` 执行器，支持模型路由证据、任务进度渲染、yield 结果聚合、schema 校验和子代理提醒。
+  - 增加 advisor gate、task review、main acceptance review、quality review 等多层审查材料。
+  - 支持把实现、测试、审查、验收拆成不同角色的可追踪执行包。
+
+- **TDD、验收与真实运行证据**
+  - 增加 TDD evidence、runtime scenarios、real-runtime simulation、global impact、gate failure summary 等执行证据模块。
+  - 支持在计划执行中记录 red/green、验证命令、失败原因、修复循环和最终验收结论。
+
+- **TODO / Plan Run 状态面板**
+  - 扩展 todo phase、role-bound todo snapshot、blocked 状态、模型/角色绑定展示。
+  - 增加 Plan Run panel model 和 status sink，让长任务执行状态更容易在 TUI/RPC 中展示。
+
+- **智能 compaction 与上下文保护**
+  - 增加 smart compaction router、snapcompact fallback、hard ceiling、progress guard 等上下文维护能力。
+  - 目标是在长任务、子代理、多轮验收场景中减少上下文溢出和无效循环。
+
+- **个人开发流程支持**
+  - 增加 superpowers agent bridge、superpowers agents CLI、计划执行 book 工具、repair loop 工具等本地工作流组件。
+  - 补充分段计划写作、执行计划、codebase-memory recon/reindex 等围绕 AI 开发闭环的工具链。
+
+### 分支与同步约定
+
+推荐保持两个远端：
+
+```sh
+origin   https://github.com/BearMaxDD/oh-my-pi.git
+upstream https://github.com/can1357/oh-my-pi.git
+```
+
+日常开发：
+
+```sh
+git switch mima/omp-custom
+git pull
+# 修改代码
+bun install
+bun run check
+git push
+```
+
+同步官方更新：
+
+```sh
+git switch mima/omp-custom
+git fetch upstream --tags
+git merge upstream/main
+bun install
+bun run check
+git push
+```
+
+### 验证命令
+
+本分支修改后至少运行：
+
+```sh
+bun run check
+```
+
+Plan Run / Superpowers / TODO / advisor 相关变更，建议额外运行对应测试：
+
+```sh
+bun test packages/coding-agent/test/skills-codebase-memory-gate.test.ts \
+  packages/coding-agent/test/rpc-skill-command.test.ts \
+  packages/coding-agent/test/tools/todo.test.ts \
+  packages/coding-agent/test/advisor-toggle.test.ts \
+  packages/coding-agent/test/model-selector-role-badge-thinking.test.ts
+```
+
+> 下方保留官方 OMP README 主体，用于继续跟随 upstream 文档和安装说明。
+
 The most capable agent surface that ships. Continuously tuned by real-world use — complete out of the box, open all the way down.
 
 **40+** providers · **32** built-in tools · **14** lsp ops · **28** dap ops · **~55k** lines of Rust core.
