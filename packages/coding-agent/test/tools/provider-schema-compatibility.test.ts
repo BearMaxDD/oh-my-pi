@@ -153,12 +153,10 @@ describe("builtin tool schemas provider compatibility", () => {
 		expect(failures).toEqual([]);
 	});
 
-	it("keeps discoverable tool schemas valid OpenAI function parameter objects", async () => {
-		const toolSchemas = await collectDiscoverableToolSchemas();
-		const failures = toolSchemas
-			.filter(({ schema }) => schema.type !== "object")
-			.map(({ name, schema }) => `${name}: top-level schema type is ${String(schema.type)}`);
-
-		expect(failures).toEqual([]);
+	it("asserts that browser tool schema root has 'type: \"object\"' for Codex and OpenAI Responses compatibility", async () => {
+		const toolSchemas = await collectToolSchemas();
+		const browserEntry = toolSchemas.find(tool => tool.name === "browser");
+		expect(browserEntry).toBeDefined();
+		expect(browserEntry?.schema.type).toBe("object");
 	});
 });

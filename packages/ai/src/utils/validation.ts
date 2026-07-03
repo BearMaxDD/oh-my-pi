@@ -26,6 +26,7 @@ import { structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { type Type, type } from "arktype";
 import type { ZodType } from "zod/v4";
 import type { $ZodIssue as ZodIssue } from "zod/v4/core";
+import * as AIError from "../error";
 import type { Tool, ToolCall } from "../types";
 import { upgradeJsonSchemaTo202012 } from "./schema/draft";
 import {
@@ -1080,6 +1081,54 @@ function normalizeStringEncodedArrayUnions(schema: unknown, value: unknown): { v
 	return { value: changed ? nextValue : valueObject, changed };
 }
 
+/**
+ * Name of the sole property when a schema declares exactly one required string
+ * field, else `undefined`. Recognizes the closed single-argument tool shape
+ * (`{ type: "object", properties: { X: { type: "string" } }, required: ["X"] }`).
+ */
+function singleRequiredStringKey(schema: unknown): string | undefined {
+	if (!schema || typeof schema !== "object" || Array.isArray(schema)) return undefined;
+	const obj = schema as Record<string, unknown>;
+	if (obj.type !== "object") return undefined;
+	const properties = obj.properties;
+	if (!properties || typeof properties !== "object") return undefined;
+	const keys = Object.keys(properties as Record<string, unknown>);
+	if (keys.length !== 1) return undefined;
+	const key = keys[0];
+	const required = obj.required;
+	if (!Array.isArray(required) || required.length !== 1 || required[0] !== key) return undefined;
+	const propertySchema = (properties as Record<string, unknown>)[key];
+	if (!propertySchema || typeof propertySchema !== "object") return undefined;
+	return (propertySchema as Record<string, unknown>).type === "string" ? key : undefined;
+}
+
+/**
+ * LLM-quirk repair for single-argument tools. When a tool declares exactly one
+ * property — a required string — some providers deliver the payload under a
+ * different key (e.g. the `edit` tool's patch arriving as `input`/`_input`, or
+ * any single-string tool whose argument the model mislabels). When the declared
+ * key is absent but another field holds a string, adopt the first such string
+ * as the declared key so the call validates instead of failing with "<key> was
+ * missing". A present-but-wrong-type value is left alone so its real type error
+ * still surfaces.
+ */
+function normalizeSingleStringField(schema: unknown, value: unknown): { value: unknown; changed: boolean } {
+	const key = singleRequiredStringKey(schema);
+	if (key === undefined) return { value, changed: false };
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return { value, changed: false };
+	const record = value as Record<string, unknown>;
+	if (record[key] !== undefined) return { value, changed: false };
+	for (const candidate in record) {
+		if (candidate === key || !Object.hasOwn(record, candidate)) continue;
+		const candidateValue = record[candidate];
+		if (typeof candidateValue !== "string") continue;
+		const next = { ...record, [key]: candidateValue };
+		delete next[candidate];
+		return { value: next, changed: true };
+	}
+	return { value, changed: false };
+}
+
 // ============================================================================
 // Zod issue → coercion bridge
 // ============================================================================
@@ -1365,7 +1414,7 @@ const MAX_COERCION_PASSES = 5;
 export function validateToolCall(tools: Tool[], toolCall: ToolCall): ToolCall["arguments"] {
 	const tool = tools.find(t => t.name === toolCall.name);
 	if (!tool) {
-		throw new Error(`Tool "${toolCall.name}" not found`);
+		throw new AIError.ToolNotFoundError(toolCall.name);
 	}
 	return validateToolArguments(tool, toolCall);
 }
@@ -1405,7 +1454,7 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 			rawJson.length <= maxLen
 				? rawJson
 				: `${rawJson.slice(0, maxLen)}… [truncated ${rawJson.length - maxLen} chars]`;
-		throw new Error(
+		throw new AIError.ValidationError(
 			`Validation failed for tool "${toolCall.name}": Tool call arguments are not valid JSON.\nParse Error: ${parseError}\nRaw JSON:\n${truncatedRawJson}`,
 		);
 	}
@@ -1446,6 +1495,14 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 		changed = true;
 	}
 
+	// Single-argument tools (e.g. `edit`): if the model put the lone required
+	// string under a different key, adopt the first string field as that key.
+	const singleStringNorm = normalizeSingleStringField(json, normalizedArgs);
+	if (singleStringNorm.changed) {
+		normalizedArgs = singleStringNorm.value;
+		changed = true;
+	}
+
 	let result = validateContext(ctx, normalizedArgs);
 	if (result.success) return result.value as ToolCall["arguments"];
 
@@ -1479,6 +1536,14 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 			normalizedArgs = stringEncodedArrayNormPass.value;
 		}
 
+		// Re-run single-string remap: `coerceArgsFromIssues` may have just
+		// unwrapped a JSON-stringified root object, exposing a mislabelled lone
+		// string field the initial pre-pass could not see.
+		const singleStringNormPass = normalizeSingleStringField(json, normalizedArgs);
+		if (singleStringNormPass.changed) {
+			normalizedArgs = singleStringNormPass.value;
+		}
+
 		result = validateContext(ctx, normalizedArgs);
 		if (result.success) return result.value as ToolCall["arguments"];
 	}
@@ -1501,5 +1566,5 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 		toolCall.name
 	}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(receivedArgs, null, 2)}`;
 
-	throw new Error(errorMessage);
+	throw new AIError.ValidationError(errorMessage);
 }

@@ -47,6 +47,7 @@ export interface TodoCompletionTransition {
 export interface TodoToolDetails {
 	phases: TodoPhase[];
 	storage: "session" | "memory";
+	op?: TodoSchema["op"];
 	completedTasks?: TodoCompletionTransition[];
 }
 
@@ -109,6 +110,18 @@ function clonePhases(phases: TodoPhase[]): TodoPhase[] {
 
 function isOpenTodoStatus(status: TodoStatus): boolean {
 	return status === "pending" || status === "in_progress" || status === "blocked";
+}
+
+export function nextActionableTask(phases: TodoPhase[]): TodoItem | undefined {
+	for (const phase of phases) {
+		const active = phase.tasks.find(task => task.status === "in_progress");
+		if (active) return active;
+	}
+	for (const phase of phases) {
+		const pending = phase.tasks.find(task => task.status === "pending");
+		if (pending) return pending;
+	}
+	return undefined;
 }
 
 function todoTransitionKey(phase: string, content: string): string {
@@ -652,7 +665,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, updated);
 		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
-		const details: TodoToolDetails = { phases: effective, storage };
+		const details: TodoToolDetails = { phases: effective, storage, op: params.op };
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 
 		return {

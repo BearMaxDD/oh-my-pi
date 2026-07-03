@@ -1,6 +1,8 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { THINKING_LOOP_ERROR_MARKER } from "@oh-my-pi/pi-ai/utils/thinking-loop";
+import * as AIError from "@oh-my-pi/pi-ai/error";
+import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
+import { logger, prompt } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
@@ -19,15 +21,19 @@ import { createUsageRowBlock } from "../../modes/components/usage-row";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, TodoPhase } from "../../modes/types";
 import type { PlanApprovalDetails } from "../../plan-mode/approved-plan";
+import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { isSilentAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
+import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import type { ResolveToolDetails } from "../../tools/resolve";
+import { nextActionableTask } from "../../tools/todo";
+import { SpeechEnhancer } from "../../tts/speech-enhancer";
 import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { interruptHint } from "../shared";
 import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
 import { StreamingRevealController } from "./streaming-reveal";
-import { ToolArgsRevealController } from "./tool-args-reveal";
+import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
 
@@ -42,6 +48,17 @@ const IRC_MESSAGE_VISIBLE_TTL_MS = 10_000;
  * oldest live-region card retires as soon as a new one would exceed the cap.
  */
 const MAX_LIVE_IRC_CARDS = 4;
+const IDLE_RECAP_MIN_SECONDS = 1;
+const IDLE_RECAP_MAX_SECONDS = 3600;
+
+const RAW_PARTIAL_JSON_RENDERERS: Record<string, true> = { bash: true, edit: true, apply_patch: true };
+
+function exposesRawPartialJson(toolName: string, rawInput: boolean, tool: unknown): boolean {
+	if (rawInput) return true;
+	if (RAW_PARTIAL_JSON_RENDERERS[toolName]) return true;
+	if (tool === null || typeof tool !== "object" || !("renderCall" in tool)) return false;
+	return typeof tool.renderCall === "function";
+}
 
 type AgentSessionEventHandlers = {
 	[E in AgentSessionEventKind]: (event: Extract<AgentSessionEvent, { type: E }>) => Promise<void>;
@@ -68,6 +85,10 @@ export class EventController {
 	// #handleMessageEnd / #handleAgentStart).
 	#pinnedErrorComponent: AssistantMessageComponent | undefined = undefined;
 	#idleCompactionTimer?: NodeJS.Timeout;
+	#idleRecapTimer?: NodeJS.Timeout;
+	// In-flight ephemeral recap turn; aborted by #cancelIdleRecap when any
+	// activity (new turn, compaction, editor draft) supersedes the idle recap.
+	#idleRecapAbort?: AbortController;
 	#ircExpiryTimers = new Map<string, NodeJS.Timeout>();
 	// Insertion-ordered IRC cards not yet retired; values are the transcript
 	// components each card contributed (see #retireIrcCard for the guard).
@@ -91,6 +112,21 @@ export class EventController {
 	#terminalProgressActive = false;
 
 	constructor(private ctx: InteractiveModeContext) {
+		// Enhanced speech (`speech.enhanced`) rewrites blocks through the
+		// tiny/smol role with this session's registry and credentials; the
+		// vocalizer falls back to mechanical cleanup when unset. Tolerates
+		// partial contexts (tests, minimal embeddings) by wiring null.
+		const session = ctx.session;
+		vocalizer.setEnhancer(
+			session?.modelRegistry && session.agent && session.settings
+				? new SpeechEnhancer({
+						settings: session.settings,
+						registry: session.modelRegistry,
+						sessionId: session.sessionId,
+						metadataResolver: provider => session.agent.metadataForProvider(provider),
+					})
+				: null,
+		);
 		this.#streamingReveal = new StreamingRevealController({
 			getSmoothStreaming: () => this.ctx.settings.get("display.smoothStreaming"),
 			getHideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
@@ -156,6 +192,7 @@ export class EventController {
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
 		this.#cancelIdleCompaction();
+		this.#cancelIdleRecap();
 		this.#setTerminalProgress(false);
 		for (const timer of this.#ircExpiryTimers.values()) {
 			clearTimeout(timer);
@@ -247,6 +284,7 @@ export class EventController {
 		this.#lastAssistantComponent = undefined;
 		this.#pinnedErrorComponent = undefined;
 		this.#cancelIdleCompaction();
+		this.#cancelIdleRecap();
 		for (const timer of this.#ircExpiryTimers.values()) {
 			clearTimeout(timer);
 		}
@@ -264,9 +302,13 @@ export class EventController {
 			await this.ctx.init();
 		}
 
-		this.ctx.statusLine.invalidate();
-		this.ctx.updateEditorTopBorder();
-
+		// Each handler explicitly requests a render (or leaves it out, when it
+		// changed nothing visible). A blanket pre-render fired on every event —
+		// including the ~hundreds of `message_update` deltas per streaming turn —
+		// doubled the paint rate: the pre-render's frame fires while the handler
+		// is awaiting, then the handler's own final requestRender schedules a
+		// second identical frame. Removing it lets the render cadence follow real
+		// state changes rather than event volume (issue #4353).
 		const run = this.#handlers[event.type] as (e: AgentSessionEvent) => Promise<void>;
 		await run(event);
 	}
@@ -301,6 +343,8 @@ export class EventController {
 			this.ctx.statusContainer.clear();
 		}
 		this.#cancelIdleCompaction();
+		this.#cancelIdleRecap();
+		this.ctx.statusLine.markActivityStart();
 		this.#setTerminalProgress(true);
 		this.ctx.ensureLoadingAnimation();
 		this.ctx.ui.requestRender();
@@ -553,6 +597,11 @@ export class EventController {
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.#vocalizeDelta(event);
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
+			const unlockedThinkingVisibility = this.ctx.noteDisplayableThinkingContent(event.message);
+			if (unlockedThinkingVisibility) {
+				this.ctx.streamingComponent.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
+				this.#streamingReveal.resyncVisibility();
+			}
 			this.ctx.streamingMessage = event.message;
 			this.#streamingReveal.setTarget(this.ctx.streamingMessage);
 
@@ -603,21 +652,22 @@ export class EventController {
 					// Internal URL read falls through to ToolExecutionComponent below.
 				}
 
-				// Preserve the raw partial JSON for renderers that need to surface fields before the JSON object closes.
+				// Preserve the raw partial JSON only for renderers that need to surface fields before the JSON object closes.
 				// Bash uses this to show inline env assignments during streaming instead of popping them in at completion.
 				// While the JSON is still open, ToolArgsRevealController paces the
 				// reveal (write/edit/bash previews grow smoothly when a slow provider
 				// delivers large batches); once it closes, the final args render
 				// as-is — mirroring how assistant text snaps at message_end.
-				const partialJson = "partialJson" in content ? content.partialJson : undefined;
 				let renderArgs: Record<string, unknown>;
-				if (typeof partialJson === "string") {
-					renderArgs = this.#toolArgsReveal.setTarget(
-						content.id,
-						partialJson,
-						content.customWireName !== undefined,
-						content.arguments,
-					);
+				const partialJson = getStreamingPartialJson(content);
+				const rawInput = content.customWireName !== undefined;
+				const tool = this.ctx.viewSession.getToolByName(content.name);
+				if (partialJson) {
+					renderArgs = this.#toolArgsReveal.setTarget(content.id, partialJson, {
+						rawInput,
+						exposeRawPartialJson: exposesRawPartialJson(content.name, rawInput, tool),
+						streamingStringKeys: streamingStringKeysForTool(content.name, rawInput),
+					});
 				} else {
 					this.#toolArgsReveal.finish(content.id);
 					renderArgs = content.arguments;
@@ -625,7 +675,6 @@ export class EventController {
 				if (!this.ctx.pendingTools.has(content.id)) {
 					this.#resolveDisplaceablePoll(content.name);
 					this.#resetReadGroup();
-					const tool = this.ctx.viewSession.getToolByName(content.name);
 					const component = new ToolExecutionComponent(
 						content.name,
 						renderArgs,
@@ -680,6 +729,12 @@ export class EventController {
 
 	async #handleMessageEnd(event: Extract<AgentSessionEvent, { type: "message_end" }>): Promise<void> {
 		if (event.message.role === "user") return;
+		const unlockedThinkingVisibility =
+			event.message.role === "assistant" && this.ctx.noteDisplayableThinkingContent(event.message);
+		if (unlockedThinkingVisibility && this.ctx.streamingComponent) {
+			this.ctx.streamingComponent.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
+			this.#streamingReveal.resyncVisibility();
+		}
 		if (event.message.role === "assistant" && settings.get("speech.enabled")) {
 			if (event.message.stopReason === "aborted") {
 				// Esc / Ctrl+C / interrupt: stop speaking now and drop the trailing partial.
@@ -697,7 +752,7 @@ export class EventController {
 			this.#toolArgsReveal.flushAll();
 			let errorMessage: string | undefined;
 			const aborted = this.ctx.streamingMessage.stopReason === "aborted";
-			const silentlyAborted = aborted && isSilentAbort(this.ctx.streamingMessage.errorMessage);
+			const silentlyAborted = aborted && isSilentAbort(this.ctx.streamingMessage);
 			const ttsrSilenced = aborted && this.ctx.viewSession.isTtsrAbortPending;
 			if (aborted && !silentlyAborted && !ttsrSilenced) {
 				// Resolve the operator-facing label: a user-interrupt (Esc) abort
@@ -707,7 +762,7 @@ export class EventController {
 				// AgentSession.#handleAgentEvent already stamped SILENT_ABORT_MARKER for
 				// the plan-compact transition before this controller ran, so reaching
 				// this branch implies the abort was NOT a silent internal transition.
-				errorMessage = resolveAbortLabel(this.ctx.streamingMessage.errorMessage, this.ctx.viewSession.retryAttempt);
+				errorMessage = resolveAbortLabel(this.ctx.streamingMessage, this.ctx.viewSession.retryAttempt);
 				this.ctx.streamingMessage.errorMessage = errorMessage;
 			}
 			if (silentlyAborted || ttsrSilenced) {
@@ -751,7 +806,9 @@ export class EventController {
 			this.#lastAssistantComponent = this.ctx.streamingComponent;
 			this.#lastAssistantComponent.markTranscriptBlockFinalized();
 			if (settings.get("display.showTokenUsage")) {
-				this.ctx.chatContainer.addChild(createUsageRowBlock(event.message.usage));
+				this.ctx.chatContainer.addChild(
+					createUsageRowBlock(event.message.usage, event.message.duration, event.message.ttft),
+				);
 			}
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
@@ -759,17 +816,13 @@ export class EventController {
 			// above the editor so it survives transcript scroll. Cleared at the next
 			// turn's agent_start. Suppress the transcript's inline `Error: …` line for
 			// the same message while pinned so the error isn't rendered twice.
-			if (
-				event.message.stopReason === "error" &&
-				event.message.errorMessage &&
-				!isSilentAbort(event.message.errorMessage)
-			) {
+			if (event.message.stopReason === "error" && event.message.errorMessage && !isSilentAbort(event.message)) {
 				this.#lastAssistantComponent?.setErrorPinned(true);
 				this.#pinnedErrorComponent = this.#lastAssistantComponent;
 				this.ctx.showPinnedError(event.message.errorMessage);
 			}
 			this.ctx.statusLine.invalidate();
-			this.ctx.updateEditorTopBorder();
+			this.ctx.ui.requestRender();
 		}
 		this.ctx.ui.requestRender();
 	}
@@ -859,6 +912,13 @@ export class EventController {
 	}
 
 	async #handleToolExecutionEnd(event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>): Promise<void> {
+		// A transient overlay (auto-compaction / auto-retry / handoff) that ran
+		// between this tool's start and end could have detached the working
+		// loader. `tool_execution_update` already reconciles this so the spinner
+		// reappears mid-tool; mirror it here so subagent (`task`) completions —
+		// which only fire `tool_execution_end`, never `_update` — do not leave
+		// the UI looking idle while the session keeps streaming (#3857).
+		this.#ensureWorkingLoaderWhileStreaming();
 		if (event.toolName === "read") {
 			if (this.#inlineReadToolImages(event.toolCallId, event.result)) {
 				const component = this.ctx.pendingTools.get(event.toolCallId);
@@ -970,6 +1030,7 @@ export class EventController {
 
 	async #finishAgentEnd(): Promise<void> {
 		this.#setTerminalProgress(false);
+		this.ctx.statusLine.markActivityEnd();
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.flushAll();
 		if (this.ctx.loadingAnimation) {
@@ -1011,6 +1072,7 @@ export class EventController {
 		this.#lastAssistantComponent = undefined;
 		this.ctx.ui.requestRender();
 		this.#scheduleIdleCompaction();
+		this.#scheduleIdleRecap();
 		this.sendCompletionNotification();
 	}
 
@@ -1056,6 +1118,7 @@ export class EventController {
 		event: Extract<AgentSessionEvent, { type: "auto_compaction_start" }>,
 	): Promise<void> {
 		this.#cancelIdleCompaction();
+		this.#cancelIdleRecap();
 		this.#setTerminalProgress(true);
 		this.#stopWorkingLoader();
 		this.ctx.statusContainer.clear();
@@ -1088,6 +1151,7 @@ export class EventController {
 
 	async #handleAutoCompactionEnd(event: Extract<AgentSessionEvent, { type: "auto_compaction_end" }>): Promise<void> {
 		this.#cancelIdleCompaction();
+		this.#cancelIdleRecap();
 		this.#setTerminalProgress(false);
 		if (this.ctx.autoCompactionLoader) {
 			this.ctx.autoCompactionLoader.stop();
@@ -1116,21 +1180,21 @@ export class EventController {
 				if (!event.skipped) {
 					this.ctx.rebuildChatFromMessages();
 					this.ctx.statusLine.invalidate();
-					this.ctx.updateEditorTopBorder();
+					this.ctx.ui.requestRender();
 				}
 				this.ctx.showWarning(event.errorMessage);
 			} else if (!event.skipped) {
 				this.ctx.lastAssistantUsage = undefined;
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.statusLine.invalidate();
-				this.ctx.updateEditorTopBorder();
+				this.ctx.ui.requestRender();
 				this.ctx.showStatus("Auto-shake completed");
 			}
 		} else if (event.result) {
 			this.ctx.lastAssistantUsage = undefined;
 			this.ctx.rebuildChatFromMessages();
 			this.ctx.statusLine.invalidate();
-			this.ctx.updateEditorTopBorder();
+			this.ctx.ui.requestRender();
 		} else if (event.errorMessage) {
 			this.ctx.showWarning(event.errorMessage);
 		} else if (isHandoffAction) {
@@ -1138,7 +1202,7 @@ export class EventController {
 			this.ctx.lastAssistantUsage = undefined;
 			this.ctx.rebuildChatFromMessages();
 			this.ctx.statusLine.invalidate();
-			this.ctx.updateEditorTopBorder();
+			this.ctx.ui.requestRender();
 			await this.ctx.reloadTodos();
 			this.ctx.showStatus("Auto-handoff completed");
 		} else if (event.skipped) {
@@ -1157,7 +1221,7 @@ export class EventController {
 	async #handleAutoRetryStart(event: Extract<AgentSessionEvent, { type: "auto_retry_start" }>): Promise<void> {
 		this.#stopWorkingLoader();
 		this.ctx.statusContainer.clear();
-		if (event.errorMessage?.includes(THINKING_LOOP_ERROR_MARKER)) {
+		if (AIError.is(event.errorId, AIError.Flag.ThinkingLoop)) {
 			// The retry path drops the failed assistant from runtime context. Do not
 			// restore its inline Error row; just unpin the fixed-region banner so the
 			// retry UI is the visible state.
@@ -1240,6 +1304,17 @@ export class EventController {
 		}
 	}
 
+	#cancelIdleRecap(): void {
+		if (this.#idleRecapTimer) {
+			clearTimeout(this.#idleRecapTimer);
+			this.#idleRecapTimer = undefined;
+		}
+		if (this.#idleRecapAbort) {
+			this.#idleRecapAbort.abort();
+			this.#idleRecapAbort = undefined;
+		}
+	}
+
 	#scheduleIdleCompaction(): void {
 		this.#cancelIdleCompaction();
 		// Don't schedule idle work while context maintenance is already running; the
@@ -1268,6 +1343,72 @@ export class EventController {
 			void this.ctx.viewSession.runIdleCompaction();
 		}, timeoutMs);
 		this.#idleCompactionTimer.unref?.();
+	}
+
+	#scheduleIdleRecap(): void {
+		this.#cancelIdleRecap();
+		if (this.ctx.viewSession.isCompacting) return;
+
+		const recapSettings = settings.getGroup("recap");
+		if (!recapSettings.enabled) return;
+		if (this.ctx.editor.getText().trim()) return;
+
+		const timeoutMs =
+			Math.max(IDLE_RECAP_MIN_SECONDS, Math.min(IDLE_RECAP_MAX_SECONDS, recapSettings.idleSeconds)) * 1000;
+		this.#idleRecapTimer = setTimeout(() => {
+			this.#idleRecapTimer = undefined;
+			void this.#runIdleRecap();
+		}, timeoutMs);
+		this.#idleRecapTimer.unref?.();
+	}
+
+	/**
+	 * Generate the idle recap with an ephemeral side-channel turn over the
+	 * current conversation (same pipeline as `/btw`) and surface it as a status
+	 * line. Live goal/title and the active todo task are passed as anchoring
+	 * hints because the snapshot only carries conversation history, not the
+	 * controller's todo/goal state. The request is abortable: any activity
+	 * cancels it via #cancelIdleRecap, and idle conditions are re-checked after
+	 * the reply lands so a stale recap never paints over fresh work.
+	 */
+	async #runIdleRecap(): Promise<void> {
+		if (!this.#idleConditionsHold()) return;
+		if (!this.ctx.viewSession.model) return;
+		if (this.ctx.viewSession.messages.length === 0) return;
+
+		const promptText = prompt.render(idleRecapPrompt, {
+			goal: this.#idleRecapGoalText() ?? "",
+			task: nextActionableTask(this.ctx.todoPhases)?.content ?? "",
+		});
+
+		const abort = new AbortController();
+		this.#idleRecapAbort = abort;
+		try {
+			const { replyText } = await this.ctx.viewSession.runEphemeralTurn({ promptText, signal: abort.signal });
+			if (this.#idleRecapAbort !== abort || abort.signal.aborted || !this.#idleConditionsHold()) return;
+			const recap = previewLine(replyText, TRUNCATE_LENGTHS.RECAP);
+			if (!recap) return;
+			this.ctx.showStatus(theme.fg("dim", theme.italic(`※ recap: ${recap}`)), { dim: false });
+		} catch (error) {
+			if (!abort.signal.aborted) logger.debug("Idle recap turn failed", { error: String(error) });
+		} finally {
+			if (this.#idleRecapAbort === abort) this.#idleRecapAbort = undefined;
+		}
+	}
+
+	/** Idle gate shared by the recap timer fire and its post-reply re-check. */
+	#idleConditionsHold(): boolean {
+		if (this.ctx.viewSession.isStreaming) return false;
+		if (this.ctx.viewSession.isCompacting) return false;
+		if (this.ctx.editor.getText().trim()) return false;
+		return true;
+	}
+
+	#idleRecapGoalText(): string | undefined {
+		const goal = this.ctx.viewSession.getGoalModeState?.()?.goal.objective.trim();
+		if (goal) return goal;
+		const title = this.ctx.sessionManager.getSessionName()?.trim();
+		return title || undefined;
 	}
 
 	#currentContextTokens(): number {

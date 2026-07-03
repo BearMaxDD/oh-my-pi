@@ -17,6 +17,7 @@ import {
 	REMOTE_REFRESH_SENTINEL,
 	type StoredAuthCredential,
 } from "../auth-storage";
+import * as AIError from "../error";
 import type { OAuthCredentials } from "../registry/oauth/types";
 import type { Provider } from "../types";
 import type { UsageReport } from "../usage";
@@ -24,10 +25,11 @@ import { type AuthBrokerClient, AuthBrokerStreamUnsupportedError } from "./clien
 import type { RefresherSchedule, SnapshotEntry, SnapshotResponse, SnapshotStreamEvent } from "./types";
 
 /**
- * Client-side TTL for the aggregate `/v1/usage` response. Set below the
- * broker server's own 30s usage cache so we typically pick up the broker's
- * cached value instead of re-walking the network — but high enough to absorb
- * the parallel fan-out from `#rankOAuthSelections` into a single round-trip.
+ * Client-side TTL for the aggregate `/v1/usage` response. The broker dedups
+ * upstream `/usage` hits via AuthStorage's 5-minute per-credential cache plus
+ * single-flight, so this short client TTL mainly folds the parallel fan-out
+ * from `#rankOAuthSelections` into a single round-trip — a ranking pass issues
+ * one broker call instead of N.
  */
 const USAGE_CACHE_TTL_MS = 15_000;
 const WAIT_THRESHOLD_MS = 1_000;
@@ -57,8 +59,55 @@ interface CacheEntry {
 }
 
 interface UsageCacheEntry {
-	reports: UsageReport[];
+	/**
+	 * `null` means the last aggregate `/v1/usage` fetch failed. Callers treat
+	 * this the same as a successful empty-report response ("no usage signal
+	 * for this cycle"), and the same 15s TTL applies so transient broker
+	 * outages don't turn every ranking pass into a broker retry storm.
+	 */
+	reports: UsageReport[] | null;
 	fetchedAt: number;
+}
+
+function usageOverlayKey(
+	provider: Provider,
+	ids: { accountId?: string; email?: string; projectId?: string },
+): string | undefined {
+	const accountId = ids.accountId?.trim().toLowerCase();
+	if (accountId) return `${provider}\0account:${accountId}`;
+	const email = ids.email?.trim().toLowerCase();
+	if (email) return `${provider}\0email:${email}`;
+	const projectId = ids.projectId?.trim().toLowerCase();
+	if (projectId) return `${provider}\0project:${projectId}`;
+	return undefined;
+}
+
+function mergeUsageReports(base: UsageReport, overlay: UsageReport): UsageReport {
+	const overlayLimitsById = new Map(overlay.limits.map(limit => [limit.id, limit]));
+	const limits = [];
+	for (const limit of base.limits) {
+		const replacement = overlayLimitsById.get(limit.id);
+		if (replacement) {
+			limits.push(replacement);
+			overlayLimitsById.delete(limit.id);
+		} else {
+			limits.push(limit);
+		}
+	}
+	for (const limit of overlayLimitsById.values()) limits.push(limit);
+	const overlayMetadata = (overlay.metadata ?? {}) as Record<string, unknown>;
+	return {
+		...base,
+		fetchedAt: Math.max(base.fetchedAt, overlay.fetchedAt),
+		limits,
+		metadata: {
+			...overlayMetadata,
+			...(base.metadata ?? {}),
+			...(overlayMetadata.headersUpdatedAt !== undefined
+				? { headersUpdatedAt: overlayMetadata.headersUpdatedAt }
+				: {}),
+		},
+	};
 }
 
 export interface RemoteAuthCredentialStoreOptions {
@@ -87,6 +136,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	#snapshot: SnapshotResponse = emptySnapshot();
 	#snapshotReceivedAt = Date.now();
 	#generation = 0;
+	#usageOverlays: Map<string, UsageReport> = new Map();
 	#backgroundAbort = new AbortController();
 	#cache: Map<string, CacheEntry> = new Map();
 	#usageCache?: UsageCacheEntry;
@@ -313,26 +363,26 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	async markCredentialSuspect(credentialId: number, opts: { signal?: AbortSignal } = {}): Promise<void> {
 		const { entry } = await this.#client.refreshCredential(credentialId, opts.signal);
 		if (entry.credential.type !== "oauth") {
-			throw new Error(`Broker returned non-OAuth credential for id=${credentialId}`);
+			throw new AIError.AuthBrokerError(`Broker returned non-OAuth credential for id=${credentialId}`);
 		}
 		this.#applyCredentialEntry(entry);
 		this.#maybeRefreshSnapshot("suspect credential refresh");
 	}
 
 	replaceAuthCredentialsForProvider(_provider: string, _credentials: AuthCredential[]): StoredAuthCredential[] {
-		throw new Error(
+		throw new AIError.AuthBrokerError(
 			"RemoteAuthCredentialStore is read-only on the client. Use `omp auth-broker login <provider>` to mutate credentials.",
 		);
 	}
 
 	upsertAuthCredentialForProvider(_provider: string, _credential: AuthCredential): StoredAuthCredential[] {
-		throw new Error(
+		throw new AIError.AuthBrokerError(
 			"RemoteAuthCredentialStore is read-only on the client. Use `omp auth-broker login <provider>` to mutate credentials.",
 		);
 	}
 
 	deleteAuthCredentialsForProvider(_provider: string, _disabledCause: string): void {
-		throw new Error(
+		throw new AIError.AuthBrokerError(
 			"RemoteAuthCredentialStore is read-only on the client. Use `omp auth-broker logout <provider>` to mutate credentials.",
 		);
 	}
@@ -487,7 +537,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			});
 		}
 		if (entry.credential.type !== "oauth") {
-			throw new Error(`Broker returned non-OAuth credential for id=${credentialId}`);
+			throw new AIError.AuthBrokerError(`Broker returned non-OAuth credential for id=${credentialId}`);
 		}
 		const refreshed = entry.credential;
 		return {
@@ -508,14 +558,15 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	 * residential laptop is, so all credentials surface every cycle.
 	 */
 	async fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null> {
-		return this.#raceWithSignal(this.#loadUsageReports(), signal);
+		const reports = await this.#raceWithSignal(this.#loadUsageReports(), signal);
+		return reports ? this.#applyUsageOverlays(reports) : null;
 	}
 
 	/**
 	 * Per-credential usage hook consumed by `AuthStorage.#getUsageReport`. Pulls
 	 * the aggregate broker `/v1/usage` once and serves all callers from the
-	 * same response (coalesced + cached), then matches the credential to a
-	 * report by provider + identity (accountId / email / projectId).
+	 * same response (coalesced + cached), then overlays any client-observed
+	 * header hints for the matching credential.
 	 *
 	 * The broker already aggregates with its own 30s TTL on the server side; our
 	 * 15s client TTL is below that so we usually re-use the broker's cache too.
@@ -526,8 +577,47 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		signal?: AbortSignal,
 	): Promise<UsageReport | null> {
 		const reports = await this.#raceWithSignal(this.#loadUsageReports(), signal);
-		if (!reports) return null;
-		return matchUsageReport(reports, provider, credential);
+		const matched = reports ? matchUsageReport(reports, provider, credential) : null;
+		const overlay = this.#getActiveUsageOverlay(provider, credential);
+		if (matched && overlay) return mergeUsageReports(matched, overlay);
+		return overlay ?? matched;
+	}
+
+	ingestUsageReport(provider: Provider, credential: OAuthCredential, report: UsageReport): boolean {
+		const key = usageOverlayKey(provider, credential);
+		if (!key) return false;
+		const activeOverlay = this.#getActiveUsageOverlay(provider, credential);
+		this.#usageOverlays.set(key, activeOverlay ? mergeUsageReports(activeOverlay, report) : report);
+		return true;
+	}
+
+	#getActiveUsageOverlay(provider: Provider, credential: OAuthCredential): UsageReport | undefined {
+		const key = usageOverlayKey(provider, credential);
+		if (!key) return undefined;
+		const overlay = this.#usageOverlays.get(key);
+		if (!overlay) return undefined;
+		if (Date.now() - overlay.fetchedAt >= USAGE_CACHE_TTL_MS) {
+			this.#usageOverlays.delete(key);
+			return undefined;
+		}
+		return overlay;
+	}
+
+	#applyUsageOverlays(reports: UsageReport[]): UsageReport[] {
+		const overlays = [...this.#usageOverlays.values()].filter(
+			overlay => Date.now() - overlay.fetchedAt < USAGE_CACHE_TTL_MS,
+		);
+		if (overlays.length === 0) return reports;
+		const merged = [...reports];
+		for (const overlay of overlays) {
+			const matchIndex = findMatchingReportIndex(merged, overlay);
+			if (matchIndex === -1) {
+				merged.push(overlay);
+			} else {
+				merged[matchIndex] = mergeUsageReports(merged[matchIndex]!, overlay);
+			}
+		}
+		return merged;
 	}
 
 	/**
@@ -538,11 +628,11 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	 */
 	#raceWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 		if (!signal) return promise;
-		if (signal.aborted) return Promise.reject(new Error("auth-broker request aborted"));
+		if (signal.aborted) return Promise.reject(new AIError.AbortError("auth-broker request aborted"));
 		return new Promise<T>((resolve, reject) => {
 			const onAbort = (): void => {
 				signal.removeEventListener("abort", onAbort);
-				reject(new Error("auth-broker request aborted"));
+				reject(new AIError.AbortError("auth-broker request aborted"));
 			};
 			signal.addEventListener("abort", onAbort, { once: true });
 			promise.then(
@@ -572,6 +662,10 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 			})
 			.catch(error => {
 				logger.warn("auth-broker usage fetch failed", { error: String(error) });
+				// Documented 15s TTL fallback: cache the null so sequential callers
+				// don't re-hit the broker while it's still down. See
+				// docs/auth-broker-gateway.md § "Client-side single-flight".
+				this.#usageCache = { reports: null, fetchedAt: Date.now() };
 				return null;
 			})
 			.finally(() => {
@@ -586,6 +680,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		this.#closed = true;
 		this.#backgroundAbort.abort();
 		this.#cache.clear();
+		this.#usageOverlays.clear();
 	}
 }
 
@@ -610,6 +705,22 @@ function matchUsageReport(reports: UsageReport[], provider: Provider, credential
 		if (reportMatchesIdentity(report, accountId, email, projectId)) return report;
 	}
 	return null;
+}
+
+function findMatchingReportIndex(reports: UsageReport[], overlay: UsageReport): number {
+	const candidates = reports
+		.map((report, index) => ({ report, index }))
+		.filter(candidate => candidate.report.provider === overlay.provider);
+	if (candidates.length === 0) return -1;
+	if (candidates.length === 1) return candidates[0]!.index;
+	const metadata = (overlay.metadata ?? {}) as Record<string, unknown>;
+	const accountId = readMetadataString(metadata, "accountId")?.toLowerCase();
+	const email = readMetadataString(metadata, "email")?.toLowerCase();
+	const projectId = readMetadataString(metadata, "projectId")?.toLowerCase();
+	for (const candidate of candidates) {
+		if (reportMatchesIdentity(candidate.report, accountId, email, projectId)) return candidate.index;
+	}
+	return -1;
 }
 
 function reportMatchesIdentity(

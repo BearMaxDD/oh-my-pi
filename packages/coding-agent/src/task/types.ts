@@ -1,7 +1,7 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
+import { type BaseType, type } from "arktype";
 import type { ModelAssignment } from "../modes/model-visibility";
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { NestedRepoPatch } from "./worktree";
@@ -146,7 +146,7 @@ export interface TaskItem {
 }
 
 export const taskSchema = type({
-	agent: "string",
+	agent: "string = 'task'",
 	"id?": "string",
 	"description?": "string",
 	"role?": ROLE_INPUT_SCHEMA,
@@ -157,7 +157,7 @@ export const taskSchema = type({
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
-	agent: "string",
+	agent: "string = 'task'",
 	"id?": "string",
 	"description?": "string",
 	"role?": ROLE_INPUT_SCHEMA,
@@ -167,13 +167,13 @@ const taskSchemaNoIsolation = type({
 	"+": "delete",
 });
 const taskSchemaBatch = type({
-	agent: "string",
+	agent: "string = 'task'",
 	context: "string",
 	tasks: taskItemSchemaIsolated.array(),
 	"+": "delete",
 });
 const taskSchemaBatchNoIsolation = type({
-	agent: "string",
+	agent: "string = 'task'",
 	context: "string",
 	tasks: taskItemSchema.array(),
 	"+": "delete",
@@ -183,13 +183,84 @@ const ALL_TASK_SCHEMAS = [taskSchema, taskSchemaNoIsolation, taskSchemaBatch, ta
 type DynamicTaskSchema = (typeof ALL_TASK_SCHEMAS)[number];
 export type TaskSchema = typeof taskSchema;
 /** Active task tool parameter schema for the current isolation / batch flags */
-export type TaskToolSchemaInstance = DynamicTaskSchema;
+export type TaskToolSchemaInstance = DynamicTaskSchema | BaseType;
 
-export function getTaskSchema(options: { isolationEnabled: boolean; batchEnabled: boolean }): DynamicTaskSchema {
-	if (options.batchEnabled) {
-		return options.isolationEnabled ? taskSchemaBatch : taskSchemaBatchNoIsolation;
+const TASK_AGENT_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
+const taskSchemaCache = new Map<string, BaseType>();
+
+function taskAgentSchemaRule(defaultAgent: string): string {
+	const trimmed = defaultAgent.trim();
+	if (TASK_AGENT_NAME_PATTERN.test(trimmed)) {
+		return `string = '${trimmed}'`;
 	}
-	return options.isolationEnabled ? taskSchema : taskSchemaNoIsolation;
+	return "string";
+}
+
+function createTaskSchema(options: {
+	isolationEnabled: boolean;
+	batchEnabled: boolean;
+	defaultAgent: string;
+}): BaseType {
+	const agent = taskAgentSchemaRule(options.defaultAgent);
+	if (options.batchEnabled) {
+		if (options.isolationEnabled) {
+			return type.raw({
+				agent,
+				context: "string",
+				tasks: taskItemSchemaIsolated.array(),
+				"+": "delete",
+			});
+		}
+		return type.raw({
+			agent,
+			context: "string",
+			tasks: taskItemSchema.array(),
+			"+": "delete",
+		});
+	}
+	if (options.isolationEnabled) {
+		return type.raw({
+			agent,
+			"id?": "string",
+			"description?": "string",
+			"role?": ROLE_INPUT_SCHEMA,
+			assignment: "string",
+			"isolated?": "boolean",
+			"+": "delete",
+		});
+	}
+	return type.raw({
+		agent,
+		"id?": "string",
+		"description?": "string",
+		"role?": ROLE_INPUT_SCHEMA,
+		assignment: "string",
+		"+": "delete",
+	});
+}
+
+export function getTaskSchema(options: { isolationEnabled: boolean; batchEnabled: boolean }): DynamicTaskSchema;
+export function getTaskSchema(options: {
+	isolationEnabled: boolean;
+	batchEnabled: boolean;
+	defaultAgent: string;
+}): TaskToolSchemaInstance;
+export function getTaskSchema(options: {
+	isolationEnabled: boolean;
+	batchEnabled: boolean;
+	defaultAgent?: string;
+}): TaskToolSchemaInstance {
+	const defaultAgent = options.defaultAgent ?? "task";
+	if (defaultAgent === "task") {
+		if (options.batchEnabled) return options.isolationEnabled ? taskSchemaBatch : taskSchemaBatchNoIsolation;
+		return options.isolationEnabled ? taskSchema : taskSchemaNoIsolation;
+	}
+	const key = `${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${defaultAgent}`;
+	const cached = taskSchemaCache.get(key);
+	if (cached) return cached;
+	const schema = createTaskSchema({ ...options, defaultAgent });
+	taskSchemaCache.set(key, schema);
+	return schema;
 }
 
 /**
@@ -199,6 +270,7 @@ export function getTaskSchema(options: { isolationEnabled: boolean; batchEnabled
  * method. Fields that only appear on one shape are optional.
  */
 export interface TaskParams {
+	/** Agent type to spawn; omitted values resolve from the session spawn policy. */
 	agent?: string;
 	context?: string;
 	id?: string;
@@ -293,6 +365,23 @@ export interface AgentDefinition {
 	blocking?: boolean;
 	source: AgentSource;
 	filePath?: string;
+}
+
+/** Details extracted from a subagent `yield` tool call for final-result assembly and task rendering. */
+export interface YieldItem {
+	data?: unknown;
+	status?: "success" | "aborted";
+	error?: string;
+	/** A string label is terminal; a non-empty array of labels is incremental. */
+	type?: string | string[];
+	/** Resolve this yield's payload from the latest durable assistant text instead of `data`. */
+	useLastTurn?: boolean;
+	/**
+	 * Set by the in-tool yield validator when it exhausted its retry budget and
+	 * accepted schema-invalid data anyway. The executor preserves that override
+	 * during post-mortem validation.
+	 */
+	schemaOverridden?: boolean;
 }
 
 /** Progress tracking for a single agent */
@@ -436,6 +525,12 @@ export interface SingleResult {
 	patchPath?: string;
 	/** Branch name for isolated branch-mode output */
 	branchName?: string;
+	/**
+	 * Baseline commit SHA the task branch was created from. Passed to
+	 * `mergeTaskBranches` so cherry-pick uses the inclusive range
+	 * `branchBaseSha..branchName` and preserves every agent commit's message.
+	 */
+	branchBaseSha?: string;
 	/** Nested repo patches to apply after parent merge */
 	nestedPatches?: NestedRepoPatch[];
 	/** Data extracted by registered subprocess tool handlers (keyed by tool name) */

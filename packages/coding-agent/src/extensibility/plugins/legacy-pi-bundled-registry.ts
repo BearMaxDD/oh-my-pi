@@ -43,6 +43,7 @@ import * as bundledPiAiAuthGatewayHttp from "@oh-my-pi/pi-ai/auth-gateway/http";
 import * as bundledPiAiAuthGatewayServer from "@oh-my-pi/pi-ai/auth-gateway/server";
 import * as bundledPiAiAuthGatewayTypes from "@oh-my-pi/pi-ai/auth-gateway/types";
 import * as bundledPiAiDialect from "@oh-my-pi/pi-ai/dialect";
+import * as bundledPiAiError from "@oh-my-pi/pi-ai/error";
 import * as bundledPiAiOauth from "@oh-my-pi/pi-ai/oauth";
 import * as bundledPiAiOauthAnthropic from "@oh-my-pi/pi-ai/oauth/anthropic";
 import * as bundledPiAiOauthCallbackServer from "@oh-my-pi/pi-ai/oauth/callback-server";
@@ -127,6 +128,7 @@ import * as bundledPiAiUsageShared from "@oh-my-pi/pi-ai/usage/shared";
 import * as bundledPiAiUsageZai from "@oh-my-pi/pi-ai/usage/zai";
 import * as bundledPiAiUtilsAbort from "@oh-my-pi/pi-ai/utils/abort";
 import * as bundledPiAiUtilsAnthropicAuth from "@oh-my-pi/pi-ai/utils/anthropic-auth";
+import * as bundledPiAiUtilsBlockSymbols from "@oh-my-pi/pi-ai/utils/block-symbols";
 import * as bundledPiAiUtilsDeterministicId from "@oh-my-pi/pi-ai/utils/deterministic-id";
 import * as bundledPiAiUtilsEmptyCompletionRetry from "@oh-my-pi/pi-ai/utils/empty-completion-retry";
 import * as bundledPiAiUtilsEventStream from "@oh-my-pi/pi-ai/utils/event-stream";
@@ -137,7 +139,6 @@ import * as bundledPiAiUtilsHttpInspector from "@oh-my-pi/pi-ai/utils/http-inspe
 import * as bundledPiAiUtilsIdleIterator from "@oh-my-pi/pi-ai/utils/idle-iterator";
 import * as bundledPiAiUtilsOpenaiHttp from "@oh-my-pi/pi-ai/utils/openai-http";
 import * as bundledPiAiUtilsOpenrouterHeaders from "@oh-my-pi/pi-ai/utils/openrouter-headers";
-import * as bundledPiAiUtilsOverflow from "@oh-my-pi/pi-ai/utils/overflow";
 import * as bundledPiAiUtilsParseBind from "@oh-my-pi/pi-ai/utils/parse-bind";
 import * as bundledPiAiUtilsProviderResponse from "@oh-my-pi/pi-ai/utils/provider-response";
 import * as bundledPiAiUtilsProxy from "@oh-my-pi/pi-ai/utils/proxy";
@@ -729,12 +730,14 @@ import * as bundledPiCodingAgentSessionSessionMigrations from "@oh-my-pi/pi-codi
 import * as bundledPiCodingAgentSessionSessionPaths from "@oh-my-pi/pi-coding-agent/session/session-paths";
 import * as bundledPiCodingAgentSessionSessionPersistence from "@oh-my-pi/pi-coding-agent/session/session-persistence";
 import * as bundledPiCodingAgentSessionSessionStorage from "@oh-my-pi/pi-coding-agent/session/session-storage";
+import * as bundledPiCodingAgentSessionSettingsStreamFn from "@oh-my-pi/pi-coding-agent/session/settings-stream-fn";
 import * as bundledPiCodingAgentSessionShakeTypes from "@oh-my-pi/pi-coding-agent/session/shake-types";
 import * as bundledPiCodingAgentSessionSnapcompactInline from "@oh-my-pi/pi-coding-agent/session/snapcompact-inline";
 import * as bundledPiCodingAgentSessionSnapcompactSavingsJournal from "@oh-my-pi/pi-coding-agent/session/snapcompact-savings-journal";
 import * as bundledPiCodingAgentSessionSqlSessionStorage from "@oh-my-pi/pi-coding-agent/session/sql-session-storage";
 import * as bundledPiCodingAgentSessionStreamingOutput from "@oh-my-pi/pi-coding-agent/session/streaming-output";
 import * as bundledPiCodingAgentSessionToolChoiceQueue from "@oh-my-pi/pi-coding-agent/session/tool-choice-queue";
+import * as bundledPiCodingAgentSessionTurnPersistence from "@oh-my-pi/pi-coding-agent/session/turn-persistence";
 import * as bundledPiCodingAgentSessionUnexpectedStopClassifier from "@oh-my-pi/pi-coding-agent/session/unexpected-stop-classifier";
 import * as bundledPiCodingAgentSessionYieldQueue from "@oh-my-pi/pi-coding-agent/session/yield-queue";
 import * as bundledPiCodingAgentSlashCommandsAcpBuiltins from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
@@ -1065,6 +1068,7 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-ai": bundledPiAi as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-ai/error": bundledPiAiError as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-ai/auth-broker": bundledPiAiAuthBroker as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-ai/auth-gateway": bundledPiAiAuthGateway as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-ai/utils/harmony-leak": bundledPiAiUtilsHarmonyLeak as unknown as Readonly<Record<string, unknown>>,
@@ -1229,6 +1233,7 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-ai/utils/anthropic-auth": bundledPiAiUtilsAnthropicAuth as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-ai/utils/block-symbols": bundledPiAiUtilsBlockSymbols as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-ai/utils/deterministic-id": bundledPiAiUtilsDeterministicId as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -1248,7 +1253,6 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-ai/utils/openrouter-headers": bundledPiAiUtilsOpenrouterHeaders as unknown as Readonly<
 		Record<string, unknown>
 	>,
-	"@oh-my-pi/pi-ai/utils/overflow": bundledPiAiUtilsOverflow as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-ai/utils/parse-bind": bundledPiAiUtilsParseBind as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-ai/utils/provider-response": bundledPiAiUtilsProviderResponse as unknown as Readonly<
 		Record<string, unknown>
@@ -2720,6 +2724,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		bundledPiCodingAgentSessionSessionPersistence as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/session-storage":
 		bundledPiCodingAgentSessionSessionStorage as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/session/settings-stream-fn":
+		bundledPiCodingAgentSessionSettingsStreamFn as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/shake-types": bundledPiCodingAgentSessionShakeTypes as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -2733,6 +2739,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		bundledPiCodingAgentSessionStreamingOutput as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/tool-choice-queue":
 		bundledPiCodingAgentSessionToolChoiceQueue as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/session/turn-persistence":
+		bundledPiCodingAgentSessionTurnPersistence as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/unexpected-stop-classifier":
 		bundledPiCodingAgentSessionUnexpectedStopClassifier as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/yield-queue": bundledPiCodingAgentSessionYieldQueue as unknown as Readonly<

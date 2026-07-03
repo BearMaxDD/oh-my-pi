@@ -4,8 +4,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
-	markdownToPhases,
-	phasesToMarkdown,
+	nextActionableTask,
 	resolveTodoMarkdownPath,
 	TODO_STRIKE_HOLD_FRAMES,
 	type TodoPhase,
@@ -97,72 +96,35 @@ describe("TodoTool auto-start behavior", () => {
 	});
 });
 
-describe("TodoTool blocked plan-run tasks", () => {
-	it("renders blocked tasks with a stable markdown marker and parses them back", () => {
-		const markdown = phasesToMarkdown([
+describe("nextActionableTask", () => {
+	it("returns the in-progress task before the first pending task across phases", () => {
+		const task = nextActionableTask([
 			{
-				name: "Repair",
-				tasks: [{ id: "task-7-review", content: "Fix review-blocked todo sync", status: "blocked" }],
+				name: "First",
+				tasks: [{ content: "queued first", status: "pending" }],
+			},
+			{
+				name: "Second",
+				tasks: [{ content: "active second", status: "in_progress" }],
 			},
 		]);
 
-		expect(markdown).toContain("- [!] Fix review-blocked todo sync");
-		expect(markdown).not.toContain("[undefined]");
-		expect(markdownToPhases(markdown)).toEqual({
-			phases: [
-				{
-					name: "Repair",
-					tasks: [{ content: "Fix review-blocked todo sync", status: "blocked" }],
-				},
-			],
-			errors: [],
-		});
+		expect(task?.content).toBe("active second");
 	});
 
-	it("preserves plan-run task ids and blockers when viewing session todos", async () => {
-		const tool = new TodoTool(
-			createSession([
-				{
-					name: "Task 7",
-					tasks: [
-						{
-							id: "task-7-code-review",
-							content: "Repair Mill feedback",
-							status: "blocked",
-							blockers: ["STATUS_TO_MARKER missing blocked"],
-						},
-					],
-				},
-			]),
-		);
+	it("falls back to the first pending task when nothing is in progress", () => {
+		const task = nextActionableTask([
+			{
+				name: "Done",
+				tasks: [{ content: "finished", status: "completed" }],
+			},
+			{
+				name: "Next",
+				tasks: [{ content: "first pending", status: "pending" }],
+			},
+		]);
 
-		const result = await tool.execute("call-1", { op: "view" });
-
-		expect(result.details?.phases[0]?.tasks[0]).toEqual({
-			id: "task-7-code-review",
-			content: "Repair Mill feedback",
-			status: "blocked",
-			blockers: ["STATUS_TO_MARKER missing blocked"],
-		});
-	});
-
-	it("counts blocked tasks as remaining open work in summaries", async () => {
-		const tool = new TodoTool(
-			createSession([
-				{
-					name: "Task 7",
-					tasks: [{ content: "Repair Mill feedback", status: "blocked" }],
-				},
-			]),
-		);
-
-		const result = await tool.execute("call-1", { op: "view" });
-		const summary = result.content.find(part => part.type === "text");
-		if (summary?.type !== "text") throw new Error("Expected text summary");
-		expect(summary.text).toContain("Remaining items (1):");
-		expect(summary.text).toContain("Repair Mill feedback [blocked] (Task 7)");
-		expect(summary.text).toContain("Overall: 0/1 done, 1 open.");
-		expect(summary.text).not.toContain("Remaining items: none.");
+		expect(task?.content).toBe("first pending");
 	});
 });
 
@@ -195,6 +157,7 @@ describe("TodoTool operations", () => {
 
 		const tasks = result.details?.phases[0]?.tasks ?? [];
 		expect(tasks.map(task => task.status)).toEqual(["pending", "pending", "in_progress"]);
+		expect(result.details?.op).toBe("start");
 	});
 
 	it("demotes the current in_progress task when starting another", async () => {

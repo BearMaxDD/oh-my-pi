@@ -2,6 +2,8 @@ import * as crypto from "node:crypto";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { scheduler } from "node:timers/promises";
+import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl } from "@oh-my-pi/pi-catalog/hosts";
 import {
@@ -12,10 +14,13 @@ import {
 	resolveWireModelId,
 } from "@oh-my-pi/pi-catalog/model-thinking";
 import { CATALOG_PROVIDERS, type ProviderCatalogEntry } from "@oh-my-pi/pi-catalog/provider-models";
-import { $env, $pickenv, extractHttpStatusFromError, getConfigRootDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { CODEX_BASE_URL } from "@oh-my-pi/pi-catalog/wire/codex";
+import { $env, $pickenv, getConfigRootDir, isEnoent, logger, withExtraCaFetch } from "@oh-my-pi/pi-utils";
 import { getCustomApi } from "./api-registry";
 import { AUTH_RETRY_STEPS, isApiKeyResolver, resolveRetryKey } from "./auth-retry";
-import { ProviderHttpError } from "./errors";
+import * as AIError from "./error";
+import { ProviderHttpError } from "./error";
+import { isUsageLimitOutcome } from "./error/rate-limit";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
 import type { CursorOptions } from "./providers/cursor";
@@ -53,7 +58,6 @@ import {
 	streamOpenAIResponses,
 } from "./providers/register-builtins";
 import { isSyntheticModel, streamSynthetic } from "./providers/synthetic";
-import { isUsageLimitOutcome } from "./rate-limit-utils";
 import { PROVIDER_REGISTRY } from "./registry";
 import type {
 	Api,
@@ -69,6 +73,8 @@ import type {
 	ToolChoice,
 } from "./types";
 import { AssistantMessageEventStream } from "./utils/event-stream";
+import { isFoundryEnabled } from "./utils/foundry";
+import { wrapLeakedThinkingStream } from "./utils/leaked-thinking-stream";
 import { wrapFetchForProxy } from "./utils/proxy";
 import { withRequestDebugFetch } from "./utils/request-debug";
 import { withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
@@ -79,6 +85,62 @@ function isGoogleVertexAuthenticatedModel(model: Model<Api>): boolean {
 		((model.api === "openai-completions" && isVertexExpressOpenAIUrl(model.baseUrl)) ||
 			(model.api === "anthropic-messages" && isVertexRawPredictUrl(model.baseUrl)))
 	);
+}
+
+/**
+ * Whether {@link model} is an official first-party endpoint whose stream needs
+ * no leaked-thinking healing — the official Anthropic API and the official
+ * OpenAI / OpenAI-Codex endpoints return structured thinking blocks and never
+ * leak reasoning idioms into the visible text channel.
+ *
+ * The gate is provider id **and** official endpoint URL: pointing
+ * `provider: "anthropic"` (or `openai`) at a custom proxy via `models.yml`
+ * still routes through {@link wrapLeakedThinkingStream}, since a third-party
+ * gateway may well leak. URL checks are strict (exact origin / path boundary
+ * or parsed hostname) — a substring match would accept lookalikes like
+ * `https://api.openai.com.evil/`. Anthropic Foundry (`CLAUDE_CODE_USE_FOUNDRY`)
+ * redirects an empty `baseUrl` to `FOUNDRY_BASE_URL`, so the check runs against
+ * that effective endpoint — exempt only when it resolves to the official host.
+ */
+function isLeakedThinkingHealExempt(model: Model<Api>): boolean {
+	switch (model.provider) {
+		case "anthropic":
+			// Mirror resolveAnthropicBaseUrl: Foundry redirects an empty baseUrl to
+			// FOUNDRY_BASE_URL, so exempt only when the effective endpoint is official.
+			return isOfficialAnthropicApiUrl((isFoundryEnabled() && $env.FOUNDRY_BASE_URL?.trim()) || model.baseUrl);
+		case "openai":
+			return isOfficialOpenAIApiUrl(model.baseUrl);
+		case "openai-codex":
+			return isOfficialCodexApiUrl(model.baseUrl);
+		default:
+			return false;
+	}
+}
+
+/** Strict official-OpenAI endpoint check; missing baseUrl defaults to `api.openai.com`. */
+function isOfficialOpenAIApiUrl(baseUrl: string | undefined): boolean {
+	if (!baseUrl) return true;
+	try {
+		return new URL(baseUrl).hostname === "api.openai.com";
+	} catch {
+		return false;
+	}
+}
+
+/** Strict official-Codex endpoint check; exact origin or a path boundary after {@link CODEX_BASE_URL}. */
+function isOfficialCodexApiUrl(baseUrl: string | undefined): boolean {
+	if (!baseUrl) return true;
+	const lower = baseUrl.toLowerCase().replace(/\/+$/, "");
+	return lower === CODEX_BASE_URL || lower.startsWith(`${CODEX_BASE_URL}/`);
+}
+
+/**
+ * Apply live leaked-thinking healing unless {@link model} is an official
+ * first-party endpoint ({@link isLeakedThinkingHealExempt}), which emits
+ * structured thinking and needs no healing.
+ */
+function healLeakedThinking(model: Model<Api>, inner: AssistantMessageEventStream): AssistantMessageEventStream {
+	return isLeakedThinkingHealExempt(model) ? inner : wrapLeakedThinkingStream(inner);
 }
 
 type ProviderInFlightLease = {
@@ -269,7 +331,7 @@ async function acquireProviderInFlightLock(provider: string, signal?: AbortSigna
 	await fs.mkdir(path.dirname(lockDir), { recursive: true });
 
 	while (true) {
-		if (signal?.aborted) throw signal.reason ?? new Error("Provider request aborted before dispatch");
+		if (signal?.aborted) throw signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
 		try {
 			await fs.mkdir(lockDir);
 			const lockIdentity = await readProviderInFlightLockIdentity(lockDir);
@@ -365,16 +427,20 @@ async function tryAcquireProviderInFlightLease(
 	}
 }
 
-async function signalProviderInFlightWaiters(provider: string): Promise<void> {
+async function signalProviderInFlightWaitersInDir(dir: string): Promise<void> {
 	try {
-		const dir = providerInFlightDir(provider);
 		await fs.mkdir(dir, { recursive: true });
-		await Bun.write(providerInFlightSignalPath(provider), String(Date.now()));
+		await Bun.write(path.join(dir, ".wakeup"), String(Date.now()));
 	} catch {}
 }
 
+async function signalProviderInFlightWaiters(provider: string): Promise<void> {
+	await signalProviderInFlightWaitersInDir(providerInFlightDir(provider));
+}
+
 function waitForProviderInFlightSignal(provider: string, signal?: AbortSignal): Promise<void> {
-	if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("Provider request aborted before dispatch"));
+	if (signal?.aborted)
+		return Promise.reject(signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch"));
 	const signalPath = providerInFlightSignalPath(provider);
 	const waitStarted = Date.now();
 	const { promise, resolve, reject } = Promise.withResolvers<void>();
@@ -390,7 +456,7 @@ function waitForProviderInFlightSignal(provider: string, signal?: AbortSignal): 
 		settle();
 	};
 	const onAbort = () => {
-		finish(() => reject(signal?.reason ?? new Error("Provider request aborted before dispatch")));
+		finish(() => reject(signal?.reason ?? new AIError.AbortError("Provider request aborted before dispatch")));
 	};
 	signal?.addEventListener("abort", onAbort, { once: true });
 	try {
@@ -431,11 +497,15 @@ async function removeProviderInFlightLeaseDir(leasePath: string): Promise<void> 
 	}
 }
 
-async function releaseProviderInFlightLease(provider: string, lease: ProviderInFlightLease): Promise<void> {
+// Signal into the lease's OWN provider directory (derived from `lease.path`)
+// rather than recomputing it from the current root. A release that lands after
+// the in-flight root has been repointed (only the test seam does that) must not
+// write `.wakeup` into an unrelated provider directory.
+async function releaseProviderInFlightLease(lease: ProviderInFlightLease): Promise<void> {
 	clearInterval(lease.heartbeat);
 	await lease.flushHeartbeat();
 	await removeProviderInFlightLeaseDir(lease.path);
-	await signalProviderInFlightWaiters(provider);
+	await signalProviderInFlightWaitersInDir(path.dirname(lease.path));
 }
 
 async function acquireProviderInFlightSlot(
@@ -446,9 +516,9 @@ async function acquireProviderInFlightSlot(
 	if (limit === undefined) return async () => {};
 	let loggedWait = false;
 	while (true) {
-		if (signal?.aborted) throw signal.reason ?? new Error("Provider request aborted before dispatch");
+		if (signal?.aborted) throw signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
 		const lease = await tryAcquireProviderInFlightLease(provider, limit, signal);
-		if (lease) return () => releaseProviderInFlightLease(provider, lease);
+		if (lease) return () => releaseProviderInFlightLease(lease);
 		if (!loggedWait) {
 			loggedWait = true;
 			logger.debug("Provider in-flight limit blocked request", { provider, limit });
@@ -489,8 +559,12 @@ function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal"
 	options: TOptions | undefined,
 	dispatch: () => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
+	// Leaked-thinking healing folds in here — the one shared provider-dispatch
+	// chokepoint — so the loop guard (which wraps this) sees healed events and all
+	// provider exits are covered by one wrap. Official first-party providers are
+	// exempt (see `healLeakedThinking`); healing is otherwise idempotent.
 	const limit = resolveProviderInFlightLimit(model.provider, options);
-	if (limit === undefined) return dispatch();
+	if (limit === undefined) return healLeakedThinking(model, dispatch());
 
 	const outer = new AssistantMessageEventStream();
 	void (async () => {
@@ -508,9 +582,9 @@ function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal"
 				logger.debug("Provider in-flight limit wait completed", { provider: model.provider, limit });
 			}
 			if (options?.signal?.aborted) {
-				throw options.signal.reason ?? new Error("Provider request aborted before dispatch");
+				throw options.signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
 			}
-			const inner = dispatch();
+			const inner = healLeakedThinking(model, dispatch());
 			try {
 				for await (const event of inner) {
 					outer.push(event);
@@ -695,7 +769,7 @@ function streamDispatch<TApi extends Api>(
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
 	const baseOptions = (options || {}) as StreamOptions;
-	const debugOptions = withRequestDebugFetch(baseOptions);
+	const debugOptions = withExtraCaFetch(withRequestDebugFetch(baseOptions));
 	const requestOptions = {
 		...debugOptions,
 		fetch: wrapFetchForProxy(debugOptions.fetch ?? (globalThis.fetch as FetchImpl), model.provider),
@@ -710,7 +784,7 @@ function streamDispatch<TApi extends Api>(
 	if (isGitLabDuoModel(model)) {
 		const apiKey = requestOptions.apiKey || getEnvApiKey(model.provider);
 		if (!apiKey) {
-			throw new Error(`No API key for provider: ${model.provider}`);
+			throw new AIError.MissingApiKeyError(model.provider);
 		}
 		return streamGitLabDuo(model, context, {
 			...(requestOptions as SimpleStreamOptions),
@@ -721,7 +795,7 @@ function streamDispatch<TApi extends Api>(
 	if (model.api === "gitlab-duo-agent") {
 		const apiKey = (requestOptions as StreamOptions | undefined)?.apiKey || getEnvApiKey(model.provider);
 		if (!apiKey) {
-			throw new Error(`No API key for provider: ${model.provider}`);
+			throw new AIError.MissingApiKeyError(model.provider);
 		}
 		return streamGitLabDuoWorkflow(model as Model<"gitlab-duo-agent">, context, {
 			...(requestOptions as StreamOptions | undefined),
@@ -739,7 +813,7 @@ function streamDispatch<TApi extends Api>(
 
 	const apiKey = requestOptions.apiKey || getEnvApiKey(model.provider);
 	if (!apiKey) {
-		throw new Error(`No API key for provider: ${model.provider}`);
+		throw new AIError.MissingApiKeyError(model.provider);
 	}
 	const providerOptions = isGoogleVertexAuthenticatedModel(model)
 		? {
@@ -823,8 +897,49 @@ function streamDispatch<TApi extends Api>(
 			return streamDevin(model as Model<"devin-agent">, context, providerOptions as DevinOptions);
 
 		default:
-			throw new Error(`Unhandled API: ${api}`);
+			throw new AIError.ConfigurationError(`Unhandled API: ${api}`);
 	}
+}
+
+/** Thinking-loop re-samples spent before {@link resolveWithThinkingLoopCook} cooks. */
+const THINKING_LOOP_MAX_ABORTS = 3;
+const THINKING_LOOP_RETRY_BASE_DELAY_MS = 500;
+const THINKING_LOOP_RETRY_MAX_DELAY_MS = 8_000;
+
+/**
+ * Resolve a completion, re-sampling a thinking-loop stall up to
+ * {@link THINKING_LOOP_MAX_ABORTS} times before letting it cook. The loop guard
+ * raises an empty `stopReason: "error"` stall on each guarded attempt; this
+ * result-path consumer re-dispatches a fresh request per stall and, once the abort
+ * budget is spent, runs one final pass with the guard disabled so a stubborn loop
+ * returns the model's raw output instead of a fatal stall. Non-stall results —
+ * including genuine errors — return immediately; a caller abort during backoff
+ * propagates so cancellation surfaces as an abort, never a stale stall result.
+ */
+async function resolveWithThinkingLoopCook(
+	signal: AbortSignal | undefined,
+	dispatch: () => AssistantMessageEventStream,
+	cook: () => AssistantMessageEventStream,
+): Promise<AssistantMessage> {
+	let message = await dispatch().result();
+	let thinkingLoopRetry = AIError.is(message.errorId, AIError.Flag.ThinkingLoop);
+	for (let attempt = 0; thinkingLoopRetry && attempt < THINKING_LOOP_MAX_ABORTS - 1; attempt += 1) {
+		// A caller abort surfaces as a thrown abort (never the stall, which would
+		// misclassify as a 502): throwIfAborted before backoff, and scheduler.wait
+		// rejects if the abort lands mid-delay.
+		signal?.throwIfAborted();
+		const delay = Math.min(THINKING_LOOP_RETRY_BASE_DELAY_MS * 2 ** attempt, THINKING_LOOP_RETRY_MAX_DELAY_MS);
+		await scheduler.wait(delay, { signal });
+		message = await dispatch().result();
+		thinkingLoopRetry =
+			message.stopReason === "error" &&
+			message.content.length === 0 &&
+			AIError.is(message.errorId, AIError.Flag.ThinkingLoop);
+	}
+	if (!thinkingLoopRetry) return message;
+	signal?.throwIfAborted();
+	// Abort budget spent and still looping: let it cook with the guard disabled.
+	return cook().result();
 }
 
 export async function complete<TApi extends Api>(
@@ -832,8 +947,11 @@ export async function complete<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): Promise<AssistantMessage> {
-	const s = stream(model, context, options);
-	return s.result();
+	return resolveWithThinkingLoopCook(
+		options?.signal,
+		() => stream(model, context, options),
+		() => stream(model, context, { ...options, loopGuard: { ...options?.loopGuard, enabled: false } }),
+	);
 }
 
 type AuthRetryFailure = {
@@ -845,7 +963,7 @@ type AuthRetryFailure = {
 function extractStatusFromAssistantError(message: AssistantMessage): number | undefined {
 	if (message.errorStatus !== undefined) return message.errorStatus;
 	if (!message.errorMessage) return undefined;
-	return extractHttpStatusFromError({ message: message.errorMessage });
+	return AIError.status({ message: message.errorMessage });
 }
 
 function isRetryableUpstreamError(error: unknown, status: number | undefined, message: string | undefined): boolean {
@@ -868,7 +986,9 @@ function isRetryableUpstreamError(error: unknown, status: number | undefined, me
 function createAssistantAuthError(message: AssistantMessage): Error {
 	const text = message.errorMessage ?? "Provider authentication failed";
 	const status = extractStatusFromAssistantError(message);
-	return status === undefined ? new Error(text) : new ProviderHttpError(text, status);
+	return status === undefined
+		? new AIError.ProviderResponseError(text, { kind: "runtime" })
+		: new ProviderHttpError(text, status);
 }
 
 function emitBufferedEvents(stream: AssistantMessageEventStream, events: AssistantMessageEvent[]): void {
@@ -883,7 +1003,7 @@ export function streamSimple<TApi extends Api>(
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
 	const baseOptions = (options || {}) as SimpleStreamOptions;
-	const debugOptions = withRequestDebugFetch(baseOptions);
+	const debugOptions = withExtraCaFetch(withRequestDebugFetch(baseOptions));
 	const requestOptions = {
 		...debugOptions,
 		fetch: wrapFetchForProxy(debugOptions.fetch ?? (globalThis.fetch as FetchImpl), model.provider),
@@ -937,7 +1057,7 @@ export function streamSimple<TApi extends Api>(
 					captureAuthFailure &&
 					isRetryableUpstreamError(
 						error,
-						extractHttpStatusFromError(error),
+						AIError.status(error),
 						error instanceof Error ? error.message : undefined,
 					)
 				) {
@@ -965,7 +1085,7 @@ export function streamSimple<TApi extends Api>(
 				// A thrown resolver is a broker/OAuth/network failure, not a missing
 				// key — surface the cause instead of masking it as "No API key".
 				outer.fail(
-					new Error(
+					new AIError.ConfigurationError(
 						`Failed to resolve API key for provider ${model.provider}: ${error instanceof Error ? error.message : String(error)}`,
 						{ cause: error },
 					),
@@ -973,7 +1093,7 @@ export function streamSimple<TApi extends Api>(
 				return;
 			}
 			if (lastKey === undefined) {
-				outer.fail(new Error(`No API key for provider: ${model.provider}`));
+				outer.fail(new AIError.MissingApiKeyError(model.provider));
 				return;
 			}
 			let failure = await runAttempt(lastKey, true);
@@ -1034,7 +1154,7 @@ export function streamSimple<TApi extends Api>(
 	const apiKey =
 		(typeof requestOptions?.apiKey === "string" ? requestOptions.apiKey : undefined) || getEnvApiKey(model.provider);
 	if (!apiKey) {
-		throw new Error(`No API key for provider: ${model.provider}`);
+		throw new AIError.MissingApiKeyError(model.provider);
 	}
 
 	// GitLab Duo - wraps Anthropic/OpenAI behind GitLab AI Gateway direct access tokens
@@ -1049,10 +1169,14 @@ export function streamSimple<TApi extends Api>(
 
 	// GitLab Duo Workflow - IDE workflow protocol + WebSocket action bridge
 	if (model.api === "gitlab-duo-agent") {
-		return streamGitLabDuoWorkflow(model as Model<"gitlab-duo-agent">, context, {
-			...requestOptions,
-			apiKey,
-		});
+		// Does not route through withProviderInFlightLimit, so heal explicitly.
+		return healLeakedThinking(
+			model,
+			streamGitLabDuoWorkflow(model as Model<"gitlab-duo-agent">, context, {
+				...requestOptions,
+				apiKey,
+			}),
+		);
 	}
 
 	// Kimi Code - route to dedicated handler that wraps OpenAI or Anthropic API
@@ -1087,8 +1211,11 @@ export async function completeSimple<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): Promise<AssistantMessage> {
-	const s = streamSimple(model, context, options);
-	return s.result();
+	return resolveWithThinkingLoopCook(
+		options?.signal,
+		() => streamSimple(model, context, options),
+		() => streamSimple(model, context, { ...options, loopGuard: { ...options?.loopGuard, enabled: false } }),
+	);
 }
 
 const MIN_OUTPUT_TOKENS = 1024;
@@ -1296,12 +1423,16 @@ function mapOptionsForApi<TApi extends Api>(
 		streamFirstEventTimeoutMs: options?.streamFirstEventTimeoutMs,
 		streamIdleTimeoutMs: options?.streamIdleTimeoutMs,
 		providerSessionState: options?.providerSessionState,
+		useInteractionsApi: options?.useInteractionsApi,
+		storeInteraction: options?.storeInteraction,
+		previousInteractionId: options?.previousInteractionId,
 		maxInFlightRequests: options?.maxInFlightRequests,
 		onPayload: options?.onPayload,
 		onResponse: options?.onResponse,
 		onSseEvent: options?.onSseEvent,
 		execHandlers: options?.execHandlers,
 		fetch: options?.fetch,
+		fallbacks: options?.fallbacks,
 	};
 
 	switch (model.api) {
@@ -1441,6 +1572,7 @@ function mapOptionsForApi<TApi extends Api>(
 					openrouterVariant: options?.openrouterVariant,
 					maxTokensExplicit: rawOptions?.maxTokens !== undefined,
 					disableReasoning: options?.disableReasoning,
+					textVerbosity: options?.textVerbosity,
 				});
 			}
 			return castApi<"openai-completions">({
@@ -1475,6 +1607,7 @@ function mapOptionsForApi<TApi extends Api>(
 				openrouterVariant: options?.openrouterVariant,
 				maxTokensExplicit: rawOptions?.maxTokens !== undefined,
 				disableReasoning: options?.disableReasoning,
+				textVerbosity: options?.textVerbosity,
 			});
 
 		case "azure-openai-responses":
@@ -1493,7 +1626,8 @@ function mapOptionsForApi<TApi extends Api>(
 				toolChoice: mapOpenAiToolChoice(options?.toolChoice),
 				serviceTier: options?.serviceTier,
 				preferWebsockets: options?.preferWebsockets,
-				reasoningSummary: options?.hideThinkingSummary ? null : undefined,
+				reasoningSummary: options?.hideThinkingSummary ? null : "detailed",
+				textVerbosity: options?.textVerbosity,
 			});
 
 		case "google-generative-ai": {
@@ -1503,6 +1637,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (!reasoning || !model.reasoning) {
 				return castApi<"google-generative-ai">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: { enabled: false },
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
 				});
@@ -1516,6 +1651,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (googleModel.thinking?.mode === "google-level") {
 				return castApi<"google-generative-ai">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: {
 						enabled: true,
 						level: mapEffortToGoogleThinkingLevel(effort),
@@ -1599,6 +1735,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (!reasoning || !model.reasoning) {
 				return castApi<"google-vertex">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: { enabled: false },
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
 				});
@@ -1611,6 +1748,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (geminiModel.thinking?.mode === "google-level") {
 				return castApi<"google-vertex">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: {
 						enabled: true,
 						level: mapEffortToGoogleThinkingLevel(effort),
@@ -1621,6 +1759,7 @@ function mapOptionsForApi<TApi extends Api>(
 
 			return castApi<"google-vertex">({
 				...base,
+				serviceTier: options?.serviceTier,
 				thinking: {
 					enabled: true,
 					budgetTokens: getGoogleBudget(geminiModel, effort, options?.thinkingBudgets),
@@ -1665,7 +1804,7 @@ function mapOptionsForApi<TApi extends Api>(
 			});
 		}
 		default:
-			throw new Error(`Unhandled API in mapOptionsForApi: ${model.api}`);
+			throw new AIError.ConfigurationError(`Unhandled API in mapOptionsForApi: ${model.api}`);
 	}
 }
 

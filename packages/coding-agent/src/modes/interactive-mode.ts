@@ -36,6 +36,7 @@ import {
 	TUI,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
+import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
 	APP_NAME,
 	adjustHsv,
@@ -53,6 +54,7 @@ import { reset as resetCapabilities } from "../capability";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
 import { KeybindingsManager } from "../config/keybindings";
+import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { isSettingsInitialized, onStatusLineSessionAccentChanged, Settings, settings } from "../config/settings";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
@@ -64,6 +66,7 @@ import type {
 	ExtensionWidgetOptions,
 } from "../extensibility/extensions";
 import type { CompactOptions } from "../extensibility/extensions/types";
+import type { Skill } from "../extensibility/skills";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import { type GuidedGoalMessage, runGuidedGoalTurn } from "../goals/guided-setup";
 import type { Goal, GoalModeState } from "../goals/state";
@@ -87,7 +90,12 @@ import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compa
 	type: "text",
 };
 import type { AgentRegistry } from "../registry/agent-registry";
-import type { AgentSession, AgentSessionEvent, ResolvedRoleModel } from "../session/agent-session";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	type ResolvedRoleModel,
+	SHUTDOWN_CONSOLIDATE_BUDGET_MS,
+} from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
 import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
@@ -99,8 +107,8 @@ import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { formatTaskId } from "../task/render";
+import type { ConfiguredThinkingLevel } from "../thinking";
 import type { LspStartupServerInfo } from "../tools";
-import { isImageProviderPreference, setPreferredImageProvider } from "../tools/image-gen";
 import { normalizeLocalScheme } from "../tools/path-utils";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
@@ -112,13 +120,8 @@ import { renderTreeList } from "../tui/tree-list";
 import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
+import { messageHasDisplayableThinking } from "../utils/thinking-display";
 import { popTerminalTitle, pushTerminalTitle, setSessionTerminalTitle } from "../utils/title-generator";
-import {
-	isSearchProviderId,
-	isSearchProviderPreference,
-	setExcludedSearchProviders,
-	setPreferredSearchProvider,
-} from "../web/search";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "./components/chat-block";
@@ -161,7 +164,6 @@ import {
 	createMainModelUiRefreshCoordinator,
 	createModelAssignment,
 	createModelUsageSummaryLineRenderer,
-	formatModelBadge,
 	type MainModelUiRefreshCoordinator,
 	type ModelUsageSummaryLineRenderer,
 	type ModelVisibilityValue,
@@ -170,6 +172,7 @@ import { OAuthManualInputManager } from "./oauth-manual-input";
 import { countRunningSubagentBadgeAgents, getRunningSubagentBadgeRegistry } from "./running-subagent-badge";
 import type { ObservableSession } from "./session-observer-registry";
 import { SessionObserverRegistry } from "./session-observer-registry";
+import { createSessionTeardown, type SessionTeardown } from "./session-teardown";
 import { runProviderSetupWizard } from "./setup-wizard/lazy";
 import { interruptHint } from "./shared";
 import { clearMermaidCache } from "./theme/mermaid-cache";
@@ -343,8 +346,10 @@ const MODEL_CYCLE_TRACK_CLEAR_MS = 4000;
 
 /**
  * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
- * one hooked row per running agent in the same `Id: description` shape the
+ * one tree row per running agent in the same `Id: description` shape the
  * inline task rows use (muted task preview when no description was given).
+ * Layout mirrors the Todos HUD exactly: unindented header, then
+ * `renderTreeList` rows (dim connectors) shifted right by one space.
  * Only detached background spawns are listed: a sync task call blocks the
  * parent turn and its inline tool block already renders progress live, and
  * eval `agent()` spawns are rendered by their own eval cell tree.
@@ -371,57 +376,32 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 	);
 	if (running.length === 0) return [];
 
-	const indent = "  ";
-	const hook = theme.tree.hook;
 	const dot = theme.styledSymbol("status.done", "accent");
-	const lines = ["", indent + theme.bold(theme.fg("accent", "Subagents"))];
-	running.forEach((session, index) => {
-		const prefix = `${indent}${index === 0 ? hook : " "} `;
-		const displayId = formatTaskId(session.id);
-		let line = `${prefix}${dot} ${theme.fg("accent", theme.bold(displayId))}`;
-		const executionModel = session.modelAssignment?.executionModel ?? modelAssignmentFromProgress(session);
-		const advisorModel = session.modelAssignment?.advisorModel;
-		const executionRole =
-			executionModel && !("state" in executionModel)
-				? executionModel.role
-				: (session.progress?.modelRole ?? session.agent ?? "task");
-		const badges = [
-			formatModelBadge(executionRole, executionModel),
-			formatModelBadge("advisor", advisorModel),
-		].filter((badge): badge is string => Boolean(badge));
-		const badgeText = badges.join(` ${theme.sep.dot} `);
-		const badgeWidth = badgeText ? visibleWidth(badgeText) : 0;
-		const description = session.description?.trim() || session.progress?.description?.trim();
-		if (description) {
-			const badgeReserve = badgeWidth > 0 ? badgeWidth + 1 : 0;
-			const budget =
-				badgeWidth > 0
-					? Math.max(0, columns - visibleWidth(line) - 2 - badgeReserve)
-					: Math.max(TRUNCATE_LENGTHS.SHORT, columns - visibleWidth(prefix) - visibleWidth(displayId) - 6);
-			line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(replaceTabs(description), budget))}`;
-		} else {
-			// No spawn description: fall back to a muted task preview, same as
-			// the inline task rows when a row has no label.
-			const taskPreview = session.progress?.task?.trim();
-			if (taskPreview) {
-				const badgeReserve = badgeWidth > 0 ? badgeWidth + 1 : 0;
-				const budget =
-					badgeWidth > 0 ? Math.max(0, columns - visibleWidth(line) - 1 - badgeReserve) : TRUNCATE_LENGTHS.SHORT;
-				line += ` ${theme.fg("muted", truncateToWidth(replaceTabs(taskPreview), budget))}`;
-			}
-		}
-		if (badgeText) {
-			const remaining = Math.max(0, columns - visibleWidth(line) - 1);
-			if (remaining > 0) {
-				const visibleBadge = truncateToWidth(badgeText, remaining);
-				if (visibleBadge && visibleBadge !== "…") {
-					line += ` ${theme.fg("muted", visibleBadge)}`;
+	const rows = renderTreeList(
+		{
+			items: running,
+			expanded: true,
+			renderItem: session => {
+				const displayId = formatTaskId(session.id);
+				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}`;
+				const description = session.description?.trim() || session.progress?.description?.trim();
+				if (description) {
+					const budget = Math.max(TRUNCATE_LENGTHS.SHORT, columns - visibleWidth(displayId) - 10);
+					line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(replaceTabs(description), budget))}`;
+				} else {
+					// No spawn description: fall back to a muted task preview, same as
+					// the inline task rows when a row has no label.
+					const taskPreview = session.progress?.task?.trim();
+					if (taskPreview) {
+						line += ` ${theme.fg("muted", truncateToWidth(replaceTabs(taskPreview), TRUNCATE_LENGTHS.SHORT))}`;
+					}
 				}
-			}
-		}
-		lines.push(line);
-	});
-	return lines;
+				return line;
+			},
+		},
+		theme,
+	);
+	return ["", theme.bold(theme.fg("accent", "Subagents")), ...rows.map(line => ` ${line}`)];
 }
 
 export class InteractiveMode implements InteractiveModeContext {
@@ -431,7 +411,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	keybindings: KeybindingsManager;
 	agent: Agent;
 	historyStorage?: HistoryStorage;
-	titleSystemPrompt?: string;
 
 	ui: TUI;
 	chatContainer: TranscriptContainer;
@@ -468,14 +447,29 @@ export class InteractiveMode implements InteractiveModeContext {
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
 	todoPhases: TodoPhase[] = [];
 	hideThinkingBlock = false;
+	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
+	/** Whether the visible session has produced thinking content the user can reveal. */
+	get hasDisplayableThinkingContent(): boolean {
+		return this.#sessionsWithDisplayableThinkingContent.has(this.viewSession);
+	}
+	/** Record received reasoning content so Ctrl+T can reveal it even when model metadata says thinking is off. */
+	noteDisplayableThinkingContent(message: AgentMessage): boolean {
+		if (this.hasDisplayableThinkingContent || !messageHasDisplayableThinking(message, this.proseOnlyThinking)) {
+			return false;
+		}
+		this.#sessionsWithDisplayableThinkingContent.add(this.viewSession);
+		return true;
+	}
 	/**
-	 * Effective thinking-block visibility: hidden when the user's setting is on
-	 * OR the session thinking level is "off". Some providers (MiniMax, GLM,
-	 * DeepSeek) return thinking blocks even with reasoning disabled; this
-	 * respects the user's intent when they set thinking to "off" (#626).
+	 * Effective thinking-block visibility: hidden when the user's setting is on,
+	 * or while thinking is "off" before the session has actually produced
+	 * displayable thinking content. Some providers return thinking blocks without
+	 * advertising reasoning support, so observed content unlocks the visibility
+	 * toggle.
 	 */
 	get effectiveHideThinkingBlock(): boolean {
-		return this.hideThinkingBlock || (this.viewSession?.thinkingLevel ?? ThinkingLevel.Off) === ThinkingLevel.Off;
+		const thinkingOff = (this.viewSession?.thinkingLevel ?? ThinkingLevel.Off) === ThinkingLevel.Off;
+		return this.hideThinkingBlock || (thinkingOff && !this.hasDisplayableThinkingContent);
 	}
 	proseOnlyThinking = true;
 	compactionQueuedMessages: CompactionQueuedMessage[] = [];
@@ -522,13 +516,14 @@ export class InteractiveMode implements InteractiveModeContext {
 	lastStatusSpacer: Spacer | undefined = undefined;
 	lastStatusText: Text | undefined = undefined;
 	fileSlashCommands: Set<string> = new Set();
-	skillCommands: Map<string, string> = new Map();
+	skillCommands: Map<string, Skill> = new Map();
 	oauthManualInput: OAuthManualInputManager = new OAuthManualInputManager();
 	collabHost?: CollabHost;
 	collabGuest?: CollabGuestLink;
 
 	#pendingSlashCommands: SlashCommand[] = [];
 	#cleanupUnsubscribe?: () => void;
+	#signalTeardown?: SessionTeardown;
 	readonly #version: string;
 	readonly #changelogMarkdown: string | undefined;
 	#planModePreviousTools: string[] | undefined;
@@ -537,8 +532,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#goalTurnHadToolCalls = false;
 	#goalContinuationTurnInFlight = false;
 	#goalSuppressNextContinuation = false;
-	#planModePreviousModelState: { model: Model; thinkingLevel?: ThinkingLevel } | undefined;
-	#pendingModelSwitch: { model: Model; thinkingLevel?: ThinkingLevel } | undefined;
+	#planModePreviousModelState: { model: Model; thinkingLevel?: ConfiguredThinkingLevel } | undefined;
+	#pendingModelSwitch: { model: Model; thinkingLevel?: ConfiguredThinkingLevel } | undefined;
 	#planModeHasEntered = false;
 	#planReviewOverlay: PlanReviewOverlay | undefined;
 	#planReviewOverlayHandle: OverlayHandle | undefined;
@@ -630,7 +625,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		lspServers: LspStartupServerInfo[] | undefined = undefined,
 		mcpManager?: MCPManager,
 		eventBus?: EventBus,
-		titleSystemPrompt?: string,
 	) {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
@@ -643,7 +637,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.lspServers = lspServers;
 		this.mcpManager = mcpManager;
 		this.#eventBus = eventBus;
-		this.titleSystemPrompt = titleSystemPrompt;
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
@@ -693,7 +686,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#syncEditorMaxHeight();
 		this.#resizeHandler = () => {
 			this.#syncEditorMaxHeight();
-			this.updateEditorTopBorder();
+			this.ui.requestRender();
 		};
 		process.stdout.on("resize", this.#resizeHandler);
 		try {
@@ -710,6 +703,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editorContainer.addChild(this.editor);
 		this.statusLine = new StatusLineComponent(session);
 		this.statusLine.setAutoCompactEnabled(session.autoCompactionEnabled);
+		// Lazy provider — the top border rebuild coalesces to at most one
+		// invocation per painted frame instead of firing on every session event
+		// (#4145). The TUI throttles renders at ~30fps, so a long-running eval
+		// spraying events no longer runs `getTopBorder` synchronously in the
+		// hot path where the render never gets to paint the result.
+		this.editor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
 
 		this.hideThinkingBlock = settings.get("hideThinkingBlock");
 		this.proseOnlyThinking = settings.get("proseOnlyThinking");
@@ -733,7 +732,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (settings.get("skills.enableSkillCommands")) {
 			for (const skill of this.session.skills) {
 				const commandName = `skill:${skill.name}`;
-				this.skillCommands.set(commandName, skill.filePath);
+				this.skillCommands.set(commandName, skill);
 				skillCommandList.push({ name: commandName, description: skill.description });
 			}
 		}
@@ -833,8 +832,29 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.keybindings = logger.time("InteractiveMode.init:keybindings", () => KeybindingsManager.create());
 
-		// Register session manager flush for signal handlers (SIGINT, SIGTERM, SIGHUP)
-		this.#cleanupUnsubscribe = postmortem.register("session-manager-flush", () => this.sessionManager.flush());
+		// Route SIGINT/SIGTERM/SIGHUP/uncaughtException through the same teardown
+		// the TUI Ctrl+C keypress path performs: persist the in-progress editor
+		// draft for `--resume`, then dispose the session (which emits the extension
+		// `session_shutdown` event, cancels the owned async job manager, disposes
+		// eval kernels, releases owned browser tabs, and closes the session
+		// manager). Without this callback a real kernel signal would drop the
+		// draft, skip the `session_shutdown` contract from `shared-events.ts`,
+		// and orphan background bash/task processes (issue #4080). The registered
+		// callback and `shutdown()` share one promise-memoized teardown, so a
+		// signal arriving mid-Ctrl+C no-ops instead of racing a second dispose.
+		this.#signalTeardown = createSessionTeardown({
+			getDraftText: () => this.editor.getText(),
+			beginDispose: () => this.session.beginDispose(),
+			saveDraft: text => this.sessionManager.saveDraft(text),
+			disposeSession: reason =>
+				this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason }),
+		});
+		// Forward the postmortem reason (SIGTERM/SIGHUP/uncaughtException/…) so the
+		// persisted `session_exit` diagnostic carries the real trigger. Postmortem
+		// runs callbacks in REVERSE registration order — this callback (registered
+		// after the AgentSession constructor's `agent-session:<id>` recorder) runs
+		// FIRST and its dispose() would otherwise persist the generic "dispose".
+		this.#cleanupUnsubscribe = postmortem.register("session-teardown", reason => this.#signalTeardown!(reason));
 
 		// Wire the report_tool_issue consent gate to the Yes/No dialog popup.
 		// The handler is process-global — subagent tools (which can't reach
@@ -935,11 +955,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#observerRegistry.subscribeToEventBus(this.#eventBus);
 		}
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
-		this.statusLine.setSubagentHubHint(
-			this.keybindings.getDisplayString("app.agents.hub") ||
-				this.keybindings.getDisplayString("app.session.observe") ||
-				undefined,
-		);
 		this.syncRunningSubagentBadge();
 		this.#observerRegistry.onChange(() => {
 			this.syncRunningSubagentBadge();
@@ -1030,13 +1045,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 		// Set up theme file watcher
 		this.#eventBusUnsubscribers.push(
-			onThemeChange(() => {
+			onThemeChange(event => {
 				this.#clearWorkingMessageAccentCache();
 				clearRenderCache();
 				clearMermaidCache();
 				this.ui.invalidate();
 				this.updateEditorBorderColor();
-				this.ui.requestRender();
+				if (event.ephemeral || isInsideTerminalMultiplexer()) {
+					// Theme previews and multiplexer panes cannot safely replace native
+					// scrollback: previews must stay non-destructive, and multiplexers
+					// suppress ED3 so a forced replay would duplicate transcript history.
+					this.ui.requestRender();
+					return;
+				}
+				// Rows already committed to native scrollback are immutable; replay them
+				// after a theme swap so a reader scrolled up sees the same palette.
+				this.ui.requestRender(true, { clearScrollback: true });
 			}),
 		);
 
@@ -1047,21 +1071,24 @@ export class InteractiveMode implements InteractiveModeContext {
 			onTerminalAppearanceChange(mode);
 		});
 
-		// Set up git branch watcher
+		// A branch change (checkout, worktree switch, `git switch`) invalidates
+		// the status-line git segments; the lazy top-border provider picks up
+		// the fresh branch on the next painted frame.
 		this.statusLine.watchBranch(() => {
-			this.updateEditorTopBorder();
 			this.ui.requestRender();
 		});
-
-		// Initial top border update
-		this.updateEditorTopBorder();
 	}
 
-	/** Reload the title-generation system prompt override for the provided working directory. */
+	/** Reload the title-generation system prompt override for the provided working
+	 *  directory and stash it on the session so first-input titling
+	 *  ({@link input-controller}) and replan-driven refresh
+	 *  ({@link AgentSession.#refreshTitleAfterReplan}) share one source
+	 *  ({@link discoverTitleSystemPromptFile}; issue #3734). */
 	async refreshTitleSystemPrompt(cwd?: string): Promise<void> {
 		const basePath = cwd ?? this.sessionManager.getCwd();
 		const titleSystemPromptSource = discoverTitleSystemPromptFile(basePath);
-		this.titleSystemPrompt = await resolvePromptInput(titleSystemPromptSource, "title system prompt");
+		const resolved = await resolvePromptInput(titleSystemPromptSource, "title system prompt");
+		this.session.setTitleSystemPrompt(resolved);
 	}
 
 	/** Reload slash commands and autocomplete for the provided working directory. */
@@ -1120,18 +1147,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// module-level search/image provider state reflects the destination
 			// project's configuration. Without this, the previous project's
 			// exclusions leak and newly-excluded providers are still used.
-			const excludedWebSearchProviders = settings.get("providers.webSearchExclude");
-			if (Array.isArray(excludedWebSearchProviders)) {
-				setExcludedSearchProviders(excludedWebSearchProviders.filter(isSearchProviderId));
-			}
-			const webSearchProvider = settings.get("providers.webSearch");
-			if (typeof webSearchProvider === "string" && isSearchProviderPreference(webSearchProvider)) {
-				setPreferredSearchProvider(webSearchProvider);
-			}
-			const imageProvider = settings.get("providers.image");
-			if (isImageProviderPreference(imageProvider)) {
-				setPreferredImageProvider(imageProvider);
-			}
+			applyProviderGlobalsFromSettings(settings);
 		}
 		// Re-warm plugin roots, capabilities, slash commands, and the ssh tool so
 		// the next prompt sees everything scoped to the new project directory.
@@ -1142,7 +1158,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.session.refreshSshTool({ activateIfAvailable: true });
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.statusLine.invalidate();
-		this.updateEditorTopBorder();
+		this.ui.requestRender();
 	}
 
 	async getUserInput(): Promise<SubmittedUserInput> {
@@ -1283,7 +1299,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.loopLimit = undefined;
 		this.#cancelLoopAutoSubmit();
 		this.statusLine.setLoopModeStatus(undefined);
-		this.updateEditorTopBorder();
 		this.ui.requestRender();
 		if (wasEnabled) {
 			this.showStatus(message);
@@ -1314,7 +1329,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.loopPrompt = undefined;
 		this.loopLimit = createLoopLimitRuntime(parsed.limit);
 		this.statusLine.setLoopModeStatus({ enabled: true });
-		this.updateEditorTopBorder();
 		this.ui.requestRender();
 		const limitSuffix = parsed.limit ? ` Limited to ${describeLoopLimit(parsed.limit)}.` : "";
 		const remainingSuffix = this.loopLimit ? ` ${describeLoopLimitRuntime(this.loopLimit)}.` : "";
@@ -1500,6 +1514,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			sessionAccent: settings.get("statusLine.sessionAccent"),
 			transparent: settings.get("statusLine.transparent"),
 			segmentOptions: settings.get("statusLine.segmentOptions"),
+			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
 		});
 	}
 
@@ -1509,7 +1524,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.updateEditorBorderColor();
 	}
 
-	updateEditorBorderColor(options: { requestRender?: boolean } = {}): void {
+	updateEditorBorderColor(_options: { requestRender?: boolean } = {}): void {
 		if (this.isBashMode) {
 			this.editor.borderColor = theme.getBashModeBorderColor();
 		} else if (this.isPythonMode) {
@@ -1534,8 +1549,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const base = this.editor.borderColor;
 			this.editor.borderColor = (str: string) => `\x1b[2m${base(str)}\x1b[22m`;
 		}
-		this.updateEditorTopBorder();
-		if (options.requestRender !== false) this.ui.requestRender();
+		this.ui.requestRender();
 	}
 
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
@@ -1551,21 +1565,51 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		const count = countRunningSubagentBadgeAgents(registry);
 		this.statusLine.setSubagentCount(count);
-		this.updateEditorTopBorder();
-	}
-
-	updateEditorTopBorder(): void {
-		const availableWidth = this.editor.getTopBorderAvailableWidth(this.ui.terminal.columns);
-		const topBorder = this.statusLine.getTopBorder(availableWidth);
-		this.editor.setTopBorder(topBorder);
+		this.ui.requestRender();
 	}
 
 	rebuildChatFromMessages(): void {
+		// Mid-stream rebuilds (e.g. `/shake`, theme/setting changes that touch the
+		// transcript) replay only committed `state.messages`. The agent's in-flight
+		// `streamMessage` and its still-pending tool calls live OUTSIDE
+		// `state.messages` until `message_end`, so a plain clear+replay detaches
+		// their UI components while keeping the `streamingComponent` / `pendingTools`
+		// references — subsequent `message_update`/`message_end` events would then
+		// update orphaned components that never re-render and the live LLM output
+		// vanishes from the chat (#3656). Snapshot the in-flight components,
+		// clear+replay, then re-append them in their original chat-container order
+		// and restore the `pendingTools` map so streaming routes back into them.
+		const liveComponents: Component[] = [];
+		const livePendingTools = new Map<string, ToolExecutionHandle>();
+		if (this.viewSession?.isStreaming) {
+			const liveSet = new Set<Component>();
+			if (this.streamingComponent) liveSet.add(this.streamingComponent);
+			for (const [id, component] of this.pendingTools) {
+				livePendingTools.set(id, component);
+				liveSet.add(component as unknown as Component);
+			}
+			if (liveSet.size > 0) {
+				for (const child of this.chatContainer.children) {
+					if (liveSet.has(child)) liveComponents.push(child);
+				}
+			}
+		}
 		this.chatContainer.clear();
 		// Live display uses the compacted transcript tail; export/resume callers
 		// can still request the full inline compaction history.
 		const context = this.viewSession.buildTranscriptSessionContext({ collapseCompactedHistory: true });
 		this.renderSessionContext(context);
+		for (const child of liveComponents) {
+			this.chatContainer.addChild(child);
+		}
+		// `renderSessionContext` clears `pendingTools` at start AND end so the
+		// reconstructed historical tool components don't leak into live tracking.
+		// Restore the in-flight entries afterwards so the next streamed tool-call
+		// delta is routed into the preserved component instead of stacking a
+		// duplicate ToolExecutionComponent below it.
+		for (const [id, component] of livePendingTools) {
+			this.pendingTools.set(id, component);
+		}
 		// During the pre-streaming window — after `startPendingSubmission` has
 		// optimistically rendered the user's message but before the user
 		// `message_start` event lands it in `session` entries — any rebuild
@@ -1662,8 +1706,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		}));
 		if (!mutated) return;
-		this.todoPhases = next;
 		this.session.setTodoPhases(next);
+		this.setTodos(next);
 	}
 
 	#cancelTodoAutoClearTimer(): void {
@@ -1884,7 +1928,6 @@ export class InteractiveMode implements InteractiveModeContext {
 					}
 				: undefined;
 		this.statusLine.setPlanModeStatus(status);
-		this.updateEditorTopBorder();
 		this.ui.requestRender();
 	}
 
@@ -1894,7 +1937,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				? { enabled: this.goalModeEnabled, paused: this.goalModePaused }
 				: undefined;
 		this.statusLine.setGoalModeStatus(status);
-		this.updateEditorTopBorder();
 		this.ui.requestRender();
 	}
 
@@ -1992,7 +2034,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const planThinkingLevel = resolved.explicitThinkingLevel ? resolved.thinkingLevel : undefined;
 
 		this.#planModePreviousModelState = currentModel
-			? { model: currentModel, thinkingLevel: this.session.thinkingLevel }
+			? { model: currentModel, thinkingLevel: this.session.configuredThinkingLevel() }
 			: undefined;
 
 		if (!sameModel) {
@@ -2203,7 +2245,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 	}
 
-	async #restorePlanPreviousModel(prev: { model: Model; thinkingLevel?: ThinkingLevel }): Promise<void> {
+	async #restorePlanPreviousModel(prev: { model: Model; thinkingLevel?: ConfiguredThinkingLevel }): Promise<void> {
 		if (modelsAreEqual(this.session.model, prev.model)) {
 			// Same model — only thinking level may differ. Avoid setModelTemporary()
 			// which would reset provider-side sessions and break continuity.
@@ -2661,11 +2703,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.session.clearPlanInternalAbortPending();
 		}
 
-		// Tool restoration runs on every path — the plan mode tools must be
-		// retired regardless of whether the synthetic prompt fires.
-		if (previousTools.length > 0) {
-			await this.session.setActiveToolsByName(previousTools);
-		}
+		// Restore the execution tool set, but force-enable `read`: approved-plan
+		// prompts now require loading the durable local:// plan file before work.
+		const executionTools = previousTools.includes("read") ? previousTools : [...previousTools, "read"];
+		await this.session.setActiveToolsByName(executionTools);
 		this.session.setPlanReferencePath(options.planFilePath);
 
 		// Resolve the deferred plan-approval model transition. On the compact path
@@ -2713,7 +2754,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		// plan-approved prompt is the source of the reference injection.
 		this.session.markPlanReferenceSent();
 		const planModePrompt = prompt.render(planModeApprovedPrompt, {
-			planContent,
 			planFilePath: options.planFilePath,
 			contextPreserved: options.preserveContext === true,
 		});
@@ -3187,10 +3227,13 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		if (choice === "Approve and execute" || choice === "Approve and compact context" || choice === keepContextLabel) {
 			try {
-				// Prefer in-overlay edits (already in memory) over a disk re-read; the
-				// `onPlanEdited` write is fire-and-forget, so reading the file here could
-				// race ahead of it.
+				// Prefer in-overlay edits (already in memory) over a disk re-read. The
+				// overlay mirrors edits as they happen, and approval awaits one final
+				// write so the durable plan file and synthetic prompt carry the same text.
 				const latestPlanContent = editedContent ?? (await this.#readPlanFile(planFilePath));
+				if (editedContent !== undefined) {
+					await Bun.write(this.#resolvePlanFilePath(planFilePath), editedContent);
+				}
 				if (!latestPlanContent) {
 					this.showError(`Plan file not found at ${planFilePath}`);
 					return;
@@ -3359,24 +3402,28 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
 
-		// Snapshot the editor before any teardown empties it. Persisting the draft
-		// here covers Ctrl+D shutdown with non-empty text; for /exit the editor is
-		// already cleared so saveDraft("") just removes any stale sidecar.
-		const draftText = this.editor.getText();
-
-		// Flush pending session writes before shutdown
-		await this.sessionManager.flush();
-		try {
-			await this.sessionManager.saveDraft(draftText);
-		} catch (err) {
-			logger.warn("Failed to save session draft", { error: String(err) });
-		}
 		this.#btwController.dispose();
 		this.#omfgController.dispose();
 		this.#focusController.dispose();
 
-		// Emit shutdown event to hooks
-		await this.session.dispose();
+		// Surface an explicit "Closing session…" line so the user sees a reason
+		// for the pause while `session.dispose()` flushes memory consolidate and
+		// other cleanups (issue #3641). The await on the next line yields the
+		// event loop, giving requestRender() a tick to paint the status before
+		// dispose blocks.
+		this.showStatus("Closing session…");
+
+		// Persist the draft and dispose the session through the shared teardown
+		// so a signal that arrives mid-shutdown cannot fire a second dispose.
+		// The teardown is a promise-memoized singleton; whichever path calls it
+		// first runs the work, the other awaits the same settled promise.
+		// The teardown is registered lazily in `init()` — a `/exit` reached
+		// before `init()` completed falls back to a direct dispose.
+		if (this.#signalTeardown) {
+			await this.#signalTeardown();
+		} else {
+			await this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
+		}
 
 		// Do not force a final render during teardown: disposed session/UI state can
 		// collapse to an empty frame, clearing the viewport and leaving the parent
@@ -3430,6 +3477,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		};
 		nextEditor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(this.editor));
+		nextEditor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
 		nextEditor.setMaxHeight(this.#computeEditorMaxHeight());
 		if (this.historyStorage) {
 			nextEditor.setHistoryStorage(this.historyStorage);
@@ -3449,7 +3497,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 
 		this.updateEditorBorderColor();
-		this.updateEditorTopBorder();
 		this.ui.requestRender();
 	}
 
@@ -3622,6 +3669,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		} else if (!this.statusContainer.children.includes(this.loadingAnimation)) {
 			this.statusContainer.clear();
 			this.statusContainer.addChild(this.loadingAnimation);
+			this.ui.requestRender();
 		}
 		this.applyPendingWorkingMessage();
 	}
@@ -3702,6 +3750,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		sessionContext: SessionContext,
 		options?: { updateFooter?: boolean; populateHistory?: boolean },
 	): void {
+		for (const message of sessionContext.messages) {
+			this.noteDisplayableThinkingContent(message);
+		}
 		this.#uiHelpers.renderSessionContext(sessionContext, options);
 	}
 
@@ -3846,7 +3897,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				} else {
 					this.#cleanupMicAnimation();
 				}
-				this.updateEditorTopBorder();
 				this.ui.requestRender();
 			},
 		});
@@ -3961,6 +4011,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	// Selector handling
 	showSettingsSelector(): void {
 		this.#selectorController.showSettingsSelector();
+	}
+
+	showAdvisorConfigure(): void {
+		this.#selectorController.showAdvisorConfigure();
 	}
 
 	showHistorySearch(): void {

@@ -11,7 +11,10 @@ describe("buildSkillPromptMessage superpowers codebase-memory gate", () => {
 		const skillPath = join(dir, "SKILL.md");
 		await writeFile(skillPath, "---\nname: writing-plans\n---\n# Writing Plans\n");
 
-		const result = await buildSkillPromptMessage({ name: "writing-plans", filePath: skillPath }, "规划 OMP 代码修改");
+		const result = await buildSkillPromptMessage(
+			{ name: "writing-plans", filePath: skillPath, baseDir: dir },
+			"规划 OMP 代码修改",
+		);
 
 		expect(result.message).toContain("# Writing Plans");
 		expect(result.message).toContain(SUPERPOWERS_CODEBASE_MEMORY_GATE_MARKER);
@@ -24,7 +27,10 @@ describe("buildSkillPromptMessage superpowers codebase-memory gate", () => {
 		const skillPath = join(dir, "SKILL.md");
 		await writeFile(skillPath, "---\nname: chinese-documentation\n---\n# Chinese Documentation\n");
 
-		const result = await buildSkillPromptMessage({ name: "chinese-documentation", filePath: skillPath }, "整理标点");
+		const result = await buildSkillPromptMessage(
+			{ name: "chinese-documentation", filePath: skillPath, baseDir: dir },
+			"整理标点",
+		);
 
 		expect(result.message).toContain("# Chinese Documentation");
 		expect(result.message).not.toContain(SUPERPOWERS_CODEBASE_MEMORY_GATE_MARKER);
@@ -36,7 +42,7 @@ describe("buildSkillPromptMessage superpowers codebase-memory gate", () => {
 		await writeFile(skillPath, "---\nname: writing-plans\n---\n# Writing Plans\n");
 
 		const result = await buildSkillPromptMessage(
-			{ name: "writing-plans", filePath: skillPath },
+			{ name: "writing-plans", filePath: skillPath, baseDir: dir },
 			"规划 OMP 代码修改",
 			{
 				codebaseMemoryGate: { enabled: false, mode: "advisory" },

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -21,6 +21,7 @@ function createPathContext(): SegmentContext {
 			sessionManager: undefined,
 		} as unknown as SegmentContext["session"],
 		width: 120,
+		compactThinkingLevel: false,
 		options: {
 			path: {
 				abbreviate: false,
@@ -46,8 +47,9 @@ function createPathContext(): SegmentContext {
 		contextWindow: 0,
 		autoCompactEnabled: false,
 		subagentCount: 0,
-		sessionStartTime: Date.now(),
+		activeMs: 0,
 		activeRepo: null,
+		worktree: null,
 		git: {
 			branch: null,
 			status: null,
@@ -58,6 +60,7 @@ function createPathContext(): SegmentContext {
 }
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	setProjectDir(originalProjectDir);
 });
 
@@ -69,12 +72,21 @@ function expectContentToContainPath(content: string, expected: string): void {
 	expect(content).toContain(expected);
 }
 
+function createFakeHome(): { home: string; projectsRoot: string } {
+	const homeRoot = path.join(originalProjectDir, ".wt");
+	fs.mkdirSync(homeRoot, { recursive: true });
+	const home = fs.mkdtempSync(path.join(homeRoot, "omp-status-line-home-"));
+	const projectsRoot = path.join(home, "Projects");
+	fs.mkdirSync(projectsRoot, { recursive: true });
+	vi.spyOn(os, "homedir").mockReturnValue(home);
+	return { home, projectsRoot };
+}
+
 describe("status line path segment", () => {
 	it("strips the Projects root for symlink-equivalent aliases", () => {
 		if (process.platform === "win32") return;
 
-		const projectsRoot = path.join(os.homedir(), "Projects");
-		fs.mkdirSync(projectsRoot, { recursive: true });
+		const { home, projectsRoot } = createFakeHome();
 
 		const realProjectDir = fs.mkdtempSync(path.join(projectsRoot, "omp-status-line-"));
 		const nestedDir = path.join(realProjectDir, "nested");
@@ -83,7 +95,7 @@ describe("status line path segment", () => {
 
 		try {
 			fs.mkdirSync(nestedDir, { recursive: true });
-			fs.symlinkSync(os.homedir(), homeAlias, "dir");
+			fs.symlinkSync(home, homeAlias, "dir");
 
 			const aliasedDir = path.join(homeAlias, "Projects", path.basename(realProjectDir), "nested");
 			setProjectDir(aliasedDir);
@@ -99,6 +111,7 @@ describe("status line path segment", () => {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(aliasRoot);
 			removeSyncWithRetries(realProjectDir);
+			removeSyncWithRetries(home);
 		}
 	});
 
@@ -156,8 +169,7 @@ describe("status line path segment", () => {
 	});
 
 	it("keeps the folder icon for paths outside any scratch root", () => {
-		const projectsRoot = path.join(os.homedir(), "Projects");
-		fs.mkdirSync(projectsRoot, { recursive: true });
+		const { home, projectsRoot } = createFakeHome();
 		const realProjectDir = fs.mkdtempSync(path.join(projectsRoot, "omp-status-line-real-"));
 		try {
 			setProjectDir(realProjectDir);
@@ -169,6 +181,7 @@ describe("status line path segment", () => {
 		} finally {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(realProjectDir);
+			removeSyncWithRetries(home);
 		}
 	});
 
@@ -219,5 +232,62 @@ describe("status line path segment", () => {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(parentDir);
 		}
+	});
+});
+
+describe("status line path segment in a linked worktree", () => {
+	function worktreeContext(
+		worktree: { projectName: string; worktreeName: string } | null,
+		branch: string | null,
+	): SegmentContext {
+		const ctx = createPathContext();
+		ctx.worktree = worktree;
+		ctx.git = { branch, status: null, pr: null };
+		return ctx;
+	}
+
+	it("collapses to the project name and drops the worktree dir when it equals the branch", () => {
+		const rendered = renderSegment("path", worktreeContext({ projectName: "pi", worktreeName: "xx" }, "xx"));
+		const content = Bun.stripANSI(rendered.content);
+		expect(rendered.visible).toBe(true);
+		expect(content).toBe(`${theme.icon.worktree} pi`);
+		// The base prefix, the worktree dir, and the folder icon are all gone.
+		expect(content).not.toContain(".tree");
+		expect(content).not.toContain("/xx");
+		expect(content).not.toContain(theme.icon.folder);
+	});
+
+	it("keeps the worktree dir when it diverges from the branch", () => {
+		const rendered = renderSegment("path", worktreeContext({ projectName: "pi", worktreeName: "wt-icon" }, "icon"));
+		expect(Bun.stripANSI(rendered.content)).toBe(`${theme.icon.worktree} pi/wt-icon`);
+	});
+
+	it("keeps the worktree dir when no branch is shown", () => {
+		const rendered = renderSegment("path", worktreeContext({ projectName: "pi", worktreeName: "xx" }, null));
+		expect(Bun.stripANSI(rendered.content)).toBe(`${theme.icon.worktree} pi/xx`);
+	});
+
+	it("falls back to the on-disk path when stripWorkPrefix is disabled", () => {
+		const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-wt-noprefix-"));
+		try {
+			setProjectDir(scratchDir);
+			const ctx = worktreeContext({ projectName: "pi", worktreeName: "xx" }, "xx");
+			ctx.options.path = { ...ctx.options.path, stripWorkPrefix: false };
+			const content = Bun.stripANSI(renderSegment("path", ctx).content);
+			expect(content).not.toContain(theme.icon.worktree);
+			expect(content).toContain(theme.icon.folder);
+		} finally {
+			setProjectDir(originalProjectDir);
+			removeSyncWithRetries(scratchDir);
+		}
+	});
+
+	it("clamps a long worktree label to maxLength so overflow shrink works", () => {
+		const ctx = worktreeContext({ projectName: "very-long-project-name", worktreeName: "feature" }, "other");
+		ctx.options.path = { ...ctx.options.path, maxLength: 10 };
+		const label = Bun.stripANSI(renderSegment("path", ctx).content).slice(theme.icon.worktree.length + 1);
+		expect(label.length).toBeLessThanOrEqual(10);
+		expect(label.startsWith("…")).toBe(true);
+		expect(label.endsWith("feature")).toBe(true);
 	});
 });

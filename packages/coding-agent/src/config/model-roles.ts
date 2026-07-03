@@ -14,6 +14,7 @@ export type ModelRole =
 	| "acceptance"
 	| "designer"
 	| "commit"
+	| "tiny"
 	| "title"
 	| "task"
 	| "advisor"
@@ -290,6 +291,22 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		fallbackRoleIds: ["smol", "default"],
 		capabilities: ["commit"],
 		canRunAsSubagent: true,
+		readOnly: true,
+		canEditProductionCode: false,
+		canEditTestCode: false,
+		requiresAdvisor: false,
+		color: "dim",
+	},
+	tiny: {
+		tag: "TINY",
+		name: "Tiny",
+		zhDescription: "极轻量任务、标题、摘要和短文本处理",
+		menuHintZh: "极轻量任务/标题/摘要，建议最快模型",
+		recommendedTier: "fast",
+		recommendAdvancedModel: false,
+		fallbackRoleIds: ["smol", "default"],
+		capabilities: [],
+		canRunAsSubagent: false,
 		readOnly: true,
 		canEditProductionCode: false,
 		canEditTestCode: false,
@@ -620,6 +637,7 @@ export const MODEL_ROLE_IDS: ModelRole[] = [
 	"acceptance",
 	"designer",
 	"commit",
+	"tiny",
 	"title",
 	"task",
 	"advisor",

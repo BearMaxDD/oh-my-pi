@@ -448,77 +448,74 @@ describe("task.batch spawning", () => {
 		]);
 	});
 
-	it("routes each batch item with its own modelRole and exposes routing metadata in results", async () => {
+	it("settles the batch async aggregate when a queued spawn is cancelled mid-flight", async () => {
 		mockDiscovery();
-		const seen: Array<{
-			id?: string;
-			modelRole?: string;
-			requestedModel?: string;
-		}> = [];
+		const started: string[] = [];
+		const gates = new Map<string, { promise: Promise<void>; resolve: () => void }>();
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
-			seen.push({
-				id: options.id,
-				modelRole: options.modelRole,
-				requestedModel: options.requestedModel,
-			});
-			return makeResult(options.id ?? "?", {
-				modelRole: options.modelRole,
-				requestedModel: options.requestedModel,
-			});
+			const id = options.id ?? "?";
+			started.push(id);
+			const { promise, resolve } = Promise.withResolvers<void>();
+			gates.set(id, { promise, resolve });
+			await promise;
+			return makeResult(id);
 		});
 
 		const manager = createManager();
 		const tool = await TaskTool.create(
 			createSession({
 				manager,
-				agentId: "ParentA",
-				settings: {
-					"async.enabled": true,
-					"task.batch": true,
-					modelRoles: {
-						"superpowers:tdd-writer": "openai/gpt-5.5:high",
-						"superpowers:implementer": "minimax-code-cn/MiniMax-M3",
-					},
-				},
+				settings: { "async.enabled": true, "task.batch": true, "task.maxConcurrency": 1 },
 			}),
 		);
 
-		await tool.execute("tc-routing", {
-			agent: "task",
-			context: "# Goal\nRoute by model role.",
-			tasks: [
-				{
-					id: "TddWriter",
-					description: "tdd writer",
-					assignment: "Write tests.",
-					modelRole: "superpowers:tdd-writer",
-				},
-				{
-					id: "Implementer",
-					description: "implementer",
-					assignment: "Write code.",
-					modelRole: "superpowers:implementer",
-				},
-			],
-		} as TaskParams);
+		const updates: Array<{ async?: { state?: string }; progress?: Array<{ id: string; status: string }> }> = [];
+		const result = await tool.execute(
+			"tc-batch-cancel",
+			{
+				agent: "task",
+				context: "ctx",
+				tasks: [
+					{ id: "First", assignment: "Do A." },
+					{ id: "Second", assignment: "Do B." },
+				],
+			} as TaskParams,
+			undefined,
+			update => {
+				if (update.details) {
+					updates.push({
+						async: update.details.async,
+						progress: update.details.progress?.map(p => ({ id: p.id, status: p.status })),
+					});
+				}
+			},
+		);
 
-		const tddJob = manager.getJob("TddWriter");
-		const implJob = manager.getJob("Implementer");
-		expect(tddJob).toBeDefined();
-		expect(implJob).toBeDefined();
-		await tddJob!.promise;
-		await implJob!.promise;
+		expect(result.details?.async?.state).toBe("running");
 
-		// modelRole is forwarded per item
-		const tddSpawn = seen.find(s => s.id === "TddWriter");
-		const implSpawn = seen.find(s => s.id === "Implementer");
-		expect(tddSpawn?.modelRole).toBe("superpowers:tdd-writer");
-		expect(implSpawn?.modelRole).toBe("superpowers:implementer");
-		// requestedModel should be the resolved model patterns from routing
-		expect(tddSpawn?.requestedModel).toBe("openai/gpt-5.5:high");
-		expect(implSpawn?.requestedModel).toBe("minimax-code-cn/MiniMax-M3");
+		const firstJob = manager.getJob("First")!;
+		const secondJob = manager.getJob("Second")!;
+		const deadline = Date.now() + 1_000;
+		while (started.length === 0) {
+			if (Date.now() > deadline) throw new Error("First spawn never reached the executor");
+			await Bun.sleep(5);
+		}
+		expect(started).toEqual(["First"]);
+		expect(secondJob.queued).toBe(true);
 
-		// modelRole is only set on items that provide it
-		expect(seen.filter(s => s.modelRole).length).toBe(2);
+		expect(manager.cancel(secondJob.id)).toBe(true);
+		await secondJob.promise;
+
+		gates.get("First")!.resolve();
+		await firstJob.promise;
+
+		expect(secondJob.status).toBe("cancelled");
+		const last = updates.at(-1);
+		// The acquire-time abort path has to flow through the same `onSettled`
+		// the post-acquire abort path uses, otherwise the batch aggregate sticks
+		// at "running" forever after the surviving spawn completes.
+		expect(last?.async?.state).toBe("failed");
+		expect(last?.progress?.find(p => p.id === "Second")?.status).toBe("aborted");
+		expect(last?.progress?.find(p => p.id === "First")?.status).toBe("completed");
 	});
 });

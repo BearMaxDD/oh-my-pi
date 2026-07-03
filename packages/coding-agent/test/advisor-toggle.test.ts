@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
-import { Agent } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -15,16 +15,11 @@ describe("AgentSession advisor toggle", () => {
 	let authStorage: AuthStorage;
 	let modelRegistry: ModelRegistry;
 	let model: Model;
-	let alternateAdvisorModel: Model;
+	let replacementModel: Model;
 
 	function createTestAgent(): Agent {
 		return new Agent({
-			initialState: {
-				model,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 		});
 	}
 
@@ -32,13 +27,14 @@ describe("AgentSession advisor toggle", () => {
 		sharedDir = TempDir.createSync("@pi-advisor-toggle-shared-");
 		authStorage = await AuthStorage.create(path.join(sharedDir.path(), "testauth.db"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.setRuntimeApiKey("openai", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 		const bundled = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const replacement = getBundledModel("openai", "gpt-4o-mini");
 		if (!bundled) throw new Error("Expected built-in anthropic model to exist");
+		if (!replacement) throw new Error("Expected built-in OpenAI model to exist");
 		model = bundled;
-		const alternate = getBundledModel("anthropic", "claude-opus-4-5");
-		if (!alternate) throw new Error("Expected built-in anthropic alternate advisor model to exist");
-		alternateAdvisorModel = alternate;
+		replacementModel = replacement;
 	});
 
 	afterAll(async () => {
@@ -62,7 +58,7 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings,
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 		});
 	});
 
@@ -88,104 +84,31 @@ describe("AgentSession advisor toggle", () => {
 		expect(session.formatAdvisorStatus()).toContain("Advisor is enabled (anthropic/claude-sonnet-4-5)");
 	});
 
-	it("switches the active advisor model with a runtime role override", () => {
-		session.settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
+	it("explicit enable rebuilds the runtime when the advisor role changes", () => {
+		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
-		expect(session.formatAdvisorStatus()).toContain("Advisor is enabled (anthropic/claude-sonnet-4-5)");
+		expect(session.getAdvisorAgent()?.state.model.provider).toBe(model.provider);
+		expect(session.getAdvisorAgent()?.state.model.id).toBe(model.id);
 
-		const switched = session.switchAdvisorModel(`${alternateAdvisorModel.provider}/${alternateAdvisorModel.id}`, {
-			scope: "current-run",
-			reasonCode: "quality_risk",
-			evidence: ["unit test requested a stronger advisor"],
-		});
+		session.settings.setModelRole("advisor", `${replacementModel.provider}/${replacementModel.id}`);
+		expect(session.setAdvisorEnabled(true)).toBe(true);
 
-		expect(switched).toBe(true);
-		expect(session.isAdvisorActive()).toBe(true);
-		expect(session.formatAdvisorStatus()).toContain(
-			`Advisor is enabled (${alternateAdvisorModel.provider}/${alternateAdvisorModel.id})`,
-		);
-		expect(session.settings.getModelRole("advisor")).toBe(
-			`${alternateAdvisorModel.provider}/${alternateAdvisorModel.id}`,
-		);
-
-		session.settings.clearOverride("modelRoles");
-		expect(session.settings.getModelRole("advisor")).toBe("anthropic/claude-sonnet-4-5");
+		expect(session.getAdvisorAgent()?.state.model.provider).toBe(replacementModel.provider);
+		expect(session.getAdvisorAgent()?.state.model.id).toBe(replacementModel.id);
 	});
 
-	it("reports the live advisor model assignment source", () => {
-		session.settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
+	it("keeps explicit enable idempotent when the advisor config is unchanged", () => {
+		session.settings.setModelRole("advisor", `${model.provider}/${model.id}`);
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		const advisor = session.getAdvisorAgent();
+		if (!advisor) throw new Error("Expected advisor agent to be live");
+		const historyMessage: AgentMessage = { role: "user", content: "prior advisor context", timestamp: 1 };
+		advisor.state.messages.push(historyMessage);
+
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 
-		expect(session.getAdvisorModelAssignment()).toEqual({
-			role: "advisor",
-			model: "anthropic/claude-sonnet-4-5",
-			displayName: "claude-sonnet-4-5",
-			source: "modelRoles",
-			scope: "current-run",
-		});
-
-		expect(
-			session.switchAdvisorModel(`${alternateAdvisorModel.provider}/${alternateAdvisorModel.id}`, {
-				scope: "current-run",
-				reasonCode: "quality_risk",
-				evidence: ["unit test requested a stronger advisor"],
-			}),
-		).toBe(true);
-
-		expect(session.getAdvisorModelAssignment()).toEqual({
-			role: "advisor",
-			model: `${alternateAdvisorModel.provider}/${alternateAdvisorModel.id}`,
-			displayName: alternateAdvisorModel.id,
-			source: "runtimeOverride",
-			scope: "current-run",
-		});
-	});
-
-	it("reports a disabled advisor runtime switch as runtimeOverride once enabled", () => {
-		session.settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
-		expect(session.isAdvisorActive()).toBe(false);
-
-		expect(
-			session.switchAdvisorModel(`${alternateAdvisorModel.provider}/${alternateAdvisorModel.id}`, {
-				scope: "current-run",
-				reasonCode: "quality_risk",
-				evidence: ["unit test selected advisor before enabling"],
-			}),
-		).toBe(false);
-		expect(session.setAdvisorEnabled(true)).toBe(true);
-
-		expect(session.getAdvisorModelAssignment()).toEqual({
-			role: "advisor",
-			model: `${alternateAdvisorModel.provider}/${alternateAdvisorModel.id}`,
-			displayName: alternateAdvisorModel.id,
-			source: "runtimeOverride",
-			scope: "current-run",
-		});
-	});
-
-	it("returns advisor assignment source to modelRoles after clearing a runtime override", () => {
-		session.settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
-		expect(session.setAdvisorEnabled(true)).toBe(true);
-		expect(
-			session.switchAdvisorModel(`${alternateAdvisorModel.provider}/${alternateAdvisorModel.id}`, {
-				scope: "current-run",
-				reasonCode: "quality_risk",
-				evidence: ["unit test selected a temporary advisor"],
-			}),
-		).toBe(true);
-		expect(session.getAdvisorModelAssignment()?.source).toBe("runtimeOverride");
-
-		expect(session.setAdvisorEnabled(false)).toBe(false);
-		session.settings.clearOverride("modelRoles");
-		expect(session.setAdvisorEnabled(true)).toBe(true);
-
-		expect(session.getAdvisorModelAssignment()).toEqual({
-			role: "advisor",
-			model: "anthropic/claude-sonnet-4-5",
-			displayName: "claude-sonnet-4-5",
-			source: "modelRoles",
-			scope: "current-run",
-		});
+		expect(session.getAdvisorAgent()).toBe(advisor);
+		expect(session.getAdvisorAgent()?.state.messages).toEqual([historyMessage]);
 	});
 
 	it("explicit enable overrides default-off setting for the session only", () => {
@@ -196,7 +119,7 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings: session.settings,
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 		});
 		expect(customSession.isAdvisorEnabled()).toBe(false);
 
@@ -241,14 +164,14 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings: sharedSettings,
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 		});
 		const sessionB = new AgentSession({
 			agent: session.agent,
 			sessionManager,
 			settings: sharedSettings,
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 		});
 
 		expect(sessionA.isAdvisorEnabled()).toBe(false);
@@ -287,14 +210,14 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings: sharedSettings,
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 		});
 		const subSession = new AgentSession({
 			agent: createTestAgent(),
 			sessionManager,
 			settings: sharedSettings,
 			modelRegistry,
-			advisorReadOnlyTools: [],
+			advisorTools: [],
 			agentKind: "sub",
 		});
 
