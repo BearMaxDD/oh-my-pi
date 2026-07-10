@@ -19,9 +19,15 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
-import { getModelMatchPreferences, resolveModelRoleValue } from "../../config/model-resolver";
+import {
+	formatModelSelectorValue,
+	getModelMatchPreferences,
+	parseExactModelSelector,
+	resolveModelRoleValue,
+	splitUpstreamRouting,
+} from "../../config/model-resolver";
 import { getKnownRoleIds, getRoleInfo, MODEL_ROLE_IDS, MODEL_ROLES, type RoleInfo } from "../../config/model-roles";
-import type { Settings } from "../../config/settings";
+import type { ModelRoleBatchUpdateResult, Settings } from "../../config/settings";
 import { type ThemeColor, theme } from "../../modes/theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import {
@@ -32,6 +38,12 @@ import {
 } from "../../thinking";
 import { getTabBarTheme } from "../shared";
 import { DynamicBorder } from "./dynamic-border";
+import {
+	bulkAssignmentReducer,
+	initialBulkAssignmentState,
+	type BulkAssignmentState,
+} from "./model-role-bulk-assignment";
+import type { ModelRoleBulkAssignmentRequest } from "../../config/model-role-assignment-service";
 
 function makeInvertedBadge(label: string, color: ThemeColor): string {
 	const fgAnsi = theme.getFgAnsi(color);
@@ -97,10 +109,22 @@ type RoleSelectCallback = (
 	selector?: string,
 ) => void;
 type CancelCallback = () => void;
-interface MenuRoleAction {
+type MenuRoleAction = {
+	kind: "role";
 	label: string;
-	role: string; // now accepts custom role strings
-}
+	role: string;
+};
+
+type BulkMenuAction = {
+	kind: "bulk";
+	label: string;
+	enabled: boolean;
+	reason?: string;
+};
+
+type MenuAction = MenuRoleAction | BulkMenuAction;
+
+type BulkRoleSelectCallback = (request: ModelRoleBulkAssignmentRequest) => Promise<ModelRoleBatchUpdateResult>;
 
 function formatRoleInfoForMenu(role: string, roleInfo: RoleInfo): string {
 	if (roleInfo.menuHintZh) {
@@ -134,6 +158,18 @@ function createProviderTab(providerId: string): ProviderTabState {
 }
 const TEMPORARY_MODEL_PICKER_HINT =
 	"Temporary model selection is session-only. Use Alt+M or /model for role models (default/smol/plan/task/slow/custom roles).";
+
+function getBulkAssignmentBlockReason(selector: string): string | undefined {
+	const exactSelector = parseExactModelSelector(selector);
+	const upstreamRouting = splitUpstreamRouting(selector);
+	if (!exactSelector) {
+		return "Bulk assignment is not available for non-concrete selectors";
+	}
+	if (upstreamRouting && (exactSelector.provider === "openrouter" || exactSelector.provider === "vercel-ai-gateway")) {
+		return "Bulk assignment is not available for routed selectors";
+	}
+	return undefined;
+}
 
 /**
  * Component that renders a model selector with provider tabs and context menu.
@@ -180,8 +216,10 @@ export class ModelSelectorComponent extends Container {
 	// Context menu state
 	#isMenuOpen: boolean = false;
 	#menuSelectedIndex: number = 0;
-	#menuStep: "role" | "thinking" = "role";
+	#menuStep: "role" | "thinking" | "bulk" = "role";
 	#menuSelectedRole: string | null = null;
+	#bulkAssignmentState: BulkAssignmentState | null = null;
+	#onBulkRoleSelect?: BulkRoleSelectCallback;
 
 	constructor(
 		tui: TUI,
@@ -197,6 +235,7 @@ export class ModelSelectorComponent extends Container {
 			pickerHint?: string;
 			initialSearchInput?: string;
 			currentContextTokens?: number;
+			onBulkRoleSelect?: BulkRoleSelectCallback;
 		},
 	) {
 		super();
@@ -207,6 +246,7 @@ export class ModelSelectorComponent extends Container {
 		this.#scopedModels = scopedModels;
 		this.#onSelectCallback = onSelect;
 		this.#onCancelCallback = onCancel;
+		this.#onBulkRoleSelect = options?.onBulkRoleSelect;
 		this.#temporaryOnly = options?.temporaryOnly ?? false;
 		this.#directSelect = options?.directSelect ?? false;
 		this.#pickerHint = options?.pickerHint;
@@ -300,6 +340,7 @@ export class ModelSelectorComponent extends Container {
 			const roleInfo = getRoleInfo(role, this.#settings);
 			const roleLabel = formatRoleInfoForMenu(role, roleInfo);
 			return {
+				kind: "role",
 				label: `Set as ${roleLabel}`,
 				role,
 			};
@@ -954,11 +995,24 @@ export class ModelSelectorComponent extends Container {
 		return this.#filteredModels[this.#selectedIndex];
 	}
 
-	#coerceMenuSelectedIndex(index: number): number {
-		const maxIndex = this.#menuRoleActions.length - 1;
-		if (maxIndex < 0) {
-			return 0;
+	#getMenuActions(selectedItem: ModelItem): readonly MenuAction[] {
+		if (!this.#onBulkRoleSelect) {
+			return this.#menuRoleActions;
 		}
+		const reason = getBulkAssignmentBlockReason(selectedItem.selector);
+		return [
+			{
+				kind: "bulk",
+				label: "Assign to roles...",
+				enabled: reason === undefined,
+				reason,
+			},
+			...this.#menuRoleActions,
+		];
+	}
+
+	#coerceMenuSelectedIndex(index: number): number {
+		const maxIndex = this.#menuRoleActions.length - (this.#onBulkRoleSelect ? 0 : 1);
 		return Math.max(0, Math.min(index, maxIndex));
 	}
 
@@ -975,6 +1029,7 @@ export class ModelSelectorComponent extends Container {
 		this.#menuStep = "role";
 		this.#menuSelectedRole = null;
 		this.#menuSelectedIndex = this.#coerceMenuSelectedIndex(0);
+		this.#bulkAssignmentState = null;
 		// Collapse the model list while the action/thinking menu is open so the
 		// menu owns the full viewport instead of stacking below a now-irrelevant
 		// (and often off-screen) list.
@@ -986,6 +1041,7 @@ export class ModelSelectorComponent extends Container {
 		this.#isMenuOpen = false;
 		this.#menuStep = "role";
 		this.#menuSelectedRole = null;
+		this.#bulkAssignmentState = null;
 		this.#menuContainer.clear();
 		// Restore the model list that #openMenu collapsed.
 		this.#updateList();
@@ -997,27 +1053,33 @@ export class ModelSelectorComponent extends Container {
 		const selectedItem = this.#getSelectedItem();
 		if (!selectedItem) return;
 
+		const bulkState = this.#menuStep === "bulk" ? this.#bulkAssignmentState : null;
 		const showingThinking = this.#menuStep === "thinking" && this.#menuSelectedRole !== null;
 		const thinkingOptions = showingThinking ? this.#getThinkingLevelsForModel(selectedItem.model) : [];
-		const optionLines = showingThinking
-			? thinkingOptions.map((thinkingLevel, index) => {
-					const prefix = index === this.#menuSelectedIndex ? `  ${theme.nav.cursor} ` : "    ";
-					const label = getConfiguredThinkingLevelMetadata(thinkingLevel).label;
-					return `${prefix}${label}`;
-				})
-			: this.#menuRoleActions.map((action, index) => {
-					const prefix = index === this.#menuSelectedIndex ? `  ${theme.nav.cursor} ` : "    ";
-					return `${prefix}${action.label}`;
-				});
+		let headerText: string;
+		let hintText: string;
+		let optionLines: string[];
 
-		const selectedRoleName = this.#menuSelectedRole ? getRoleInfo(this.#menuSelectedRole, this.#settings).name : "";
-		const headerText =
-			showingThinking && this.#menuSelectedRole
-				? `  Thinking for: ${selectedRoleName} (${selectedItem.id})`
-				: `  Action for: ${selectedItem.id}`;
-		const hintText = showingThinking ? "  Enter: confirm  Esc: back" : "  Enter: continue  Esc: cancel";
-		// Window the option list so a long action/thinking menu scrolls inside the
-		// viewport instead of running off the bottom of the screen.
+		if (bulkState) {
+			({ headerText, hintText, optionLines } = this.#getBulkMenuContent(bulkState, selectedItem));
+		} else if (showingThinking) {
+			const selectedRole = this.#menuSelectedRole;
+			if (!selectedRole) return;
+			headerText = `  Thinking for: ${getRoleInfo(selectedRole, this.#settings).name} (${selectedItem.id})`;
+			hintText = "  Enter: confirm  Esc: back";
+			optionLines = thinkingOptions.map((thinkingLevel, index) => {
+				const prefix = index === this.#menuSelectedIndex ? `  ${theme.nav.cursor} ` : "    ";
+				return `${prefix}${getConfiguredThinkingLevelMetadata(thinkingLevel).label}`;
+			});
+		} else {
+			headerText = `  Action for: ${selectedItem.id}`;
+			hintText = "  Enter: continue  Esc: cancel";
+			optionLines = this.#getMenuActions(selectedItem).map((action, index) => {
+				const prefix = index === this.#menuSelectedIndex ? `  ${theme.nav.cursor} ` : "    ";
+				return `${prefix}${action.label}${action.kind === "bulk" && !action.enabled ? ` — ${action.reason}` : ""}`;
+			});
+		}
+
 		const maxVisible = this.#getMenuVisibleCount(optionLines.length);
 		const needsScroll = optionLines.length > maxVisible;
 		const startIndex = needsScroll
@@ -1029,22 +1091,11 @@ export class ModelSelectorComponent extends Container {
 			visibleWidth(hintText),
 			...optionLines.map(line => visibleWidth(line)),
 		);
-		// Reserve one column for the scrollbar when the list overflows.
 		const menuWidth = contentWidth + (needsScroll ? 1 : 0);
 
 		this.#menuContainer.addChild(new Spacer(1));
 		this.#menuContainer.addChild(new Text(theme.fg("border", theme.boxRound.horizontal.repeat(menuWidth)), 0, 0));
-		if (showingThinking && this.#menuSelectedRole) {
-			this.#menuContainer.addChild(
-				new Text(
-					theme.fg("text", `  Thinking for: ${theme.bold(selectedRoleName)} (${theme.bold(selectedItem.id)})`),
-					0,
-					0,
-				),
-			);
-		} else {
-			this.#menuContainer.addChild(new Text(theme.fg("text", `  Action for: ${theme.bold(selectedItem.id)}`), 0, 0));
-		}
+		this.#menuContainer.addChild(new Text(theme.fg("text", headerText), 0, 0));
 		this.#menuContainer.addChild(new Spacer(1));
 
 		const visibleRows: string[] = [];
@@ -1055,14 +1106,14 @@ export class ModelSelectorComponent extends Container {
 			visibleRows.push(isSelected ? theme.fg("accent", lineText) : theme.fg("muted", lineText));
 		}
 		if (needsScroll) {
-			const sv = new ScrollView(visibleRows, {
+			const scrollView = new ScrollView(visibleRows, {
 				height: visibleRows.length,
 				scrollbar: "auto",
 				totalRows: optionLines.length,
-				theme: { track: t => theme.fg("muted", t), thumb: t => theme.fg("accent", t) },
+				theme: { track: text => theme.fg("muted", text), thumb: text => theme.fg("accent", text) },
 			});
-			sv.setScrollOffset(startIndex);
-			for (const row of sv.render(menuWidth)) {
+			scrollView.setScrollOffset(startIndex);
+			for (const row of scrollView.render(menuWidth)) {
 				this.#menuContainer.addChild(new Text(row, 0, 0));
 			}
 		} else {
@@ -1187,10 +1238,15 @@ export class ModelSelectorComponent extends Container {
 		const selectedItem = this.#getSelectedItem();
 		if (!selectedItem || this.#isItemDisabled(selectedItem)) return;
 
+		if (this.#menuStep === "bulk" && this.#bulkAssignmentState) {
+			this.#handleBulkMenuInput(keyData, selectedItem);
+			return;
+		}
+
 		const optionCount =
 			this.#menuStep === "thinking" && this.#menuSelectedRole !== null
 				? this.#getThinkingLevelsForModel(selectedItem.model).length
-				: this.#menuRoleActions.length;
+				: this.#getMenuActions(selectedItem).length;
 		if (optionCount === 0) return;
 
 		if (matchesSelectUp(keyData)) {
@@ -1205,8 +1261,12 @@ export class ModelSelectorComponent extends Container {
 
 		if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
 			if (this.#menuStep === "role") {
-				const action = this.#menuRoleActions[this.#menuSelectedIndex];
+				const action = this.#getMenuActions(selectedItem)[this.#menuSelectedIndex];
 				if (!action) return;
+				if (action.kind === "bulk") {
+					if (action.enabled) this.#startBulkAssignment(selectedItem);
+					return;
+				}
 				this.#menuSelectedRole = action.role;
 				this.#menuStep = "thinking";
 				this.#menuSelectedIndex = this.#getThinkingPreselectIndex(action.role, selectedItem.model);
@@ -1228,12 +1288,11 @@ export class ModelSelectorComponent extends Container {
 				this.#menuStep = "role";
 				const roleIndex = this.#menuRoleActions.findIndex(action => action.role === this.#menuSelectedRole);
 				this.#menuSelectedRole = null;
-				this.#menuSelectedIndex = roleIndex >= 0 ? roleIndex : 0;
+				this.#menuSelectedIndex = roleIndex >= 0 ? roleIndex + (this.#onBulkRoleSelect ? 1 : 0) : 0;
 				this.#updateMenu();
 				return;
 			}
 			this.#closeMenu();
-			return;
 		}
 	}
 
@@ -1259,6 +1318,212 @@ export class ModelSelectorComponent extends Container {
 		this.#updateList();
 	}
 
+	#getBulkMenuContent(
+		state: BulkAssignmentState,
+		selectedItem: ModelItem,
+	): { headerText: string; hintText: string; optionLines: string[] } {
+		switch (state.step) {
+			case "thinking": {
+				const thinkingLevels = this.#getThinkingLevelsForModel(selectedItem.model);
+				return {
+					headerText: `  Bulk role assignment: ${selectedItem.id}`,
+					hintText: "  Enter: continue  Esc: back",
+					optionLines: thinkingLevels.map((thinkingLevel, index) => {
+						const prefix = index === this.#menuSelectedIndex ? `  ${theme.nav.cursor} ` : "    ";
+						return `${prefix}${getConfiguredThinkingLevelMetadata(thinkingLevel).label}`;
+					}),
+				};
+			}
+			case "roles":
+				return {
+					headerText: "  Select roles to update",
+					hintText: "  Space: toggle  Enter: preview  Esc: back",
+					optionLines: state.availableRoleIds.map((role, index) => {
+						const prefix = index === this.#menuSelectedIndex ? `  ${theme.nav.cursor} ` : "    ";
+						const marker = state.selectedRoleIds.includes(role) ? "●" : "○";
+						return `${prefix}${marker} ${formatRoleInfoForMenu(role, getRoleInfo(role, this.#settings))}`;
+					}),
+				};
+			case "preview": {
+				const changes = state.previewChanges;
+				return {
+					headerText: "  Preview role updates",
+					hintText: "  Enter: confirm  Esc: back",
+					optionLines: state.selectedRoleIds.map(role => {
+						const outcome = changes?.changedRoleIds.includes(role) ? "update" : "unchanged";
+						return `    ${formatRoleInfoForMenu(role, getRoleInfo(role, this.#settings))}: ${outcome}`;
+					}),
+				};
+			}
+			case "saving":
+				return {
+					headerText: "  Saving bulk role assignment",
+					hintText: "  Saving...",
+					optionLines: ["    Updating selected roles..."],
+				};
+			case "error":
+				return {
+					headerText: "  Bulk role assignment error",
+					hintText: "  Enter: retry  Esc: back",
+					optionLines: [`    ${state.errorMessage ?? "Could not save role assignment"}`],
+				};
+		}
+	}
+
+	#startBulkAssignment(selectedItem: ModelItem): void {
+		const reason = getBulkAssignmentBlockReason(selectedItem.selector);
+		if (reason) return;
+		let state = bulkAssignmentReducer(initialBulkAssignmentState, {
+			type: "SET_SELECTOR",
+			selector: selectedItem.selector,
+			isConcrete: true,
+			detail: {
+				provider: selectedItem.model.provider,
+				modelId: selectedItem.model.id,
+				isConcrete: true,
+			},
+		});
+		state = bulkAssignmentReducer(state, {
+			type: "SET_AVAILABLE_ROLES",
+			roleIds: getKnownRoleIds(this.#settings),
+		});
+		this.#bulkAssignmentState = state;
+		this.#menuStep = "bulk";
+		this.#menuSelectedIndex = 0;
+		this.#updateMenu();
+	}
+
+	#previewBulkAssignment(state: BulkAssignmentState): ModelRoleBatchUpdateResult {
+		const selector = formatModelSelectorValue(
+			state.selector,
+			state.thinkingLevel === AUTO_THINKING ? undefined : state.thinkingLevel,
+		);
+		const previous: Record<string, string | undefined> = {};
+		const next: Record<string, string> = {};
+		const changedRoleIds: string[] = [];
+		const unchangedRoleIds: string[] = [];
+		for (const roleId of state.selectedRoleIds) {
+			const currentSelector = this.#settings.getModelRole(roleId);
+			previous[roleId] = currentSelector;
+			next[roleId] = selector;
+			if (currentSelector === selector) {
+				unchangedRoleIds.push(roleId);
+			} else {
+				changedRoleIds.push(roleId);
+			}
+		}
+		return { changedRoleIds, unchangedRoleIds, previous, next, persisted: false };
+	}
+
+	#saveBulkAssignment(): void {
+		const state = this.#bulkAssignmentState;
+		if (!state || state.step !== "saving") return;
+		if (!this.#onBulkRoleSelect) {
+			this.#bulkAssignmentState = bulkAssignmentReducer(state, {
+				type: "SAVE_FAILURE",
+				error: "Bulk assignment is not available",
+			});
+			this.#updateMenu();
+			return;
+		}
+
+		const saveSuccess = () => {
+			const currentState = this.#bulkAssignmentState;
+			if (!currentState || currentState.step !== "saving") return;
+			this.#bulkAssignmentState = bulkAssignmentReducer(currentState, { type: "SAVE_SUCCESS" });
+			this.#loadRoleModels();
+			this.#closeMenu();
+			this.#tui.requestRender();
+		};
+		const saveFailure = (error: unknown) => {
+			const currentState = this.#bulkAssignmentState;
+			if (!currentState || currentState.step !== "saving") return;
+			this.#bulkAssignmentState = bulkAssignmentReducer(currentState, {
+				type: "SAVE_FAILURE",
+				error: error instanceof Error ? error.message : String(error),
+			});
+			this.#updateMenu();
+			this.#tui.requestRender();
+		};
+		const selector = formatModelSelectorValue(
+			state.selector,
+			state.thinkingLevel === AUTO_THINKING ? undefined : state.thinkingLevel,
+		);
+		const saveResult = this.#onBulkRoleSelect({ selector, roleIds: state.selectedRoleIds });
+		if (!saveResult || typeof saveResult.then !== "function") {
+			saveSuccess();
+			return;
+		}
+		void saveResult.then(saveSuccess, saveFailure);
+	}
+
+	#handleBulkMenuInput(keyData: string, selectedItem: ModelItem): void {
+		const state = this.#bulkAssignmentState;
+		if (!state) return;
+		const isEnter = matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n";
+
+		if (state.step === "thinking") {
+			const thinkingLevels = this.#getThinkingLevelsForModel(selectedItem.model);
+			if (matchesSelectUp(keyData) || matchesSelectDown(keyData)) {
+				this.#moveMenuSelection(matchesSelectUp(keyData) ? -1 : 1, selectedItem, thinkingLevels.length);
+				return;
+			}
+			if (isEnter) {
+				const thinkingLevel = thinkingLevels[this.#menuSelectedIndex];
+				if (thinkingLevel === undefined) return;
+				this.#bulkAssignmentState = bulkAssignmentReducer(state, {
+					type: "SET_THINKING_LEVEL",
+					thinkingLevel,
+				});
+				this.#bulkAssignmentState = bulkAssignmentReducer(this.#bulkAssignmentState, { type: "NEXT" });
+				this.#menuSelectedIndex = 0;
+				this.#updateMenu();
+				return;
+			}
+		} else if (state.step === "roles") {
+			if (matchesSelectUp(keyData) || matchesSelectDown(keyData)) {
+				this.#moveMenuSelection(matchesSelectUp(keyData) ? -1 : 1, selectedItem, state.availableRoleIds.length);
+				return;
+			}
+			if (keyData === " ") {
+				const roleId = state.availableRoleIds[this.#menuSelectedIndex];
+				if (roleId) {
+					this.#bulkAssignmentState = bulkAssignmentReducer(state, { type: "TOGGLE_ROLE", roleId });
+					this.#updateMenu();
+				}
+				return;
+			}
+			if (isEnter) {
+				this.#bulkAssignmentState = bulkAssignmentReducer(state, {
+					type: "PREVIEW",
+					changes: this.#previewBulkAssignment(state),
+				});
+				this.#menuSelectedIndex = 0;
+				this.#updateMenu();
+				return;
+			}
+		} else if (state.step === "preview" && isEnter) {
+			this.#bulkAssignmentState = bulkAssignmentReducer(state, { type: "SAVE" });
+			this.#updateMenu();
+			this.#saveBulkAssignment();
+			return;
+		} else if (state.step === "error" && isEnter) {
+			this.#bulkAssignmentState = bulkAssignmentReducer(state, { type: "RETRY" });
+			this.#updateMenu();
+			this.#saveBulkAssignment();
+			return;
+		}
+
+		if (getKeybindings().matches(keyData, "tui.select.cancel")) {
+			if (state.step === "thinking") {
+				this.#closeMenu();
+				return;
+			}
+			this.#bulkAssignmentState = bulkAssignmentReducer(state, { type: "BACK" });
+			this.#menuSelectedIndex = 0;
+			this.#updateMenu();
+		}
+	}
 	getSearchInput(): Input {
 		return this.#searchInput;
 	}

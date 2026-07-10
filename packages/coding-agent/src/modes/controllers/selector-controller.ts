@@ -12,6 +12,7 @@ import {
 	resolveAdvisorConfigEditPath,
 	saveWatchdogConfigFile,
 } from "../../advisor";
+import { assignModelToRoles } from "../../config/model-role-assignment-service";
 import { formatModelSelectorValue, resolveAdvisorRoleSelection } from "../../config/model-resolver";
 import { getRoleInfo } from "../../config/model-roles";
 import { settings } from "../../config/settings";
@@ -676,7 +677,11 @@ export class SelectorController {
 					done();
 					this.ctx.ui.requestRender();
 				},
-				{ ...options, currentContextTokens },
+				{
+					...options,
+					currentContextTokens,
+					onBulkRoleSelect: request => assignModelToRoles(request, { settings: this.ctx.settings }),
+				},
 			);
 			return { component: selector, focus: selector };
 		});

@@ -1,5 +1,5 @@
 import { parseExactModelSelector, splitUpstreamRouting } from "./model-resolver";
-import { MODEL_ROLE_IDS } from "./model-roles";
+import { getKnownRoleIds } from "./model-roles";
 import type { ModelRoleBatchUpdateResult, Settings } from "./settings";
 
 export interface ModelRoleBulkAssignmentRequest {
@@ -8,7 +8,7 @@ export interface ModelRoleBulkAssignmentRequest {
 }
 
 export interface AssignmentDependencies {
-	settings: Pick<Settings, "setModelRolesAtomic">;
+	settings: Settings;
 }
 
 export class ModelRoleAssignmentError extends Error {
@@ -22,24 +22,18 @@ function assertConcreteSelector(selector: string): string {
 	const normalized = selector.trim();
 	const parsed = parseExactModelSelector(normalized);
 	const routed = splitUpstreamRouting(normalized);
-	if (
-		!parsed ||
-		(routed && (parsed.provider === "openrouter" || parsed.provider === "vercel-ai-gateway"))
-	) {
+	if (!parsed || (routed && (parsed.provider === "openrouter" || parsed.provider === "vercel-ai-gateway"))) {
 		throw new ModelRoleAssignmentError("Model role assignments require an exact provider/model selector");
 	}
 	return normalized;
 }
 
-
-function normalizeRoleIds(roleIds: readonly string[]): string[] {
+function normalizeRoleIds(roleIds: readonly string[], settings: Settings): string[] {
+	const knownRoleIds = new Set(getKnownRoleIds(settings));
 	const normalized = new Set<string>();
 	for (const roleId of roleIds) {
 		const trimmed = roleId.trim();
-		if (
-			!trimmed ||
-			(!MODEL_ROLE_IDS.includes(trimmed as (typeof MODEL_ROLE_IDS)[number]) && !trimmed.startsWith("custom:"))
-		) {
+		if (!trimmed || !knownRoleIds.has(trimmed)) {
 			throw new ModelRoleAssignmentError(`Unknown model role: ${roleId}`);
 		}
 		normalized.add(trimmed);
@@ -59,6 +53,6 @@ export async function assignModelToRoles(
 	deps: AssignmentDependencies,
 ): Promise<ModelRoleBatchUpdateResult> {
 	const selector = assertConcreteSelector(request.selector);
-	const roleIds = normalizeRoleIds(request.roleIds);
+	const roleIds = normalizeRoleIds(request.roleIds, deps.settings);
 	return deps.settings.setModelRolesAtomic(Object.fromEntries(roleIds.map(roleId => [roleId, selector])));
 }
