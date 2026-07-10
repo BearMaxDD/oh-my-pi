@@ -115,4 +115,20 @@ describe("Model routing evidence", () => {
 		const errors = validateModelRoutingEvidenceForAcceptance(evidence);
 		expect(errors).toEqual([]);
 	});
+
+	it("v1 writer output is JSON with schema_version 1 (v2 compatibility baseline)", async () => {
+		const evidence = createModelRoutingEvidence({
+			runId: "run-42",
+			taskId: "T02",
+			modelRole: "superpowers:tdd-writer",
+			resolvedModel: "anthropic/claude-sonnet-4-20250514",
+		});
+		const filePath = await writeModelRoutingEvidence(evidence, tmpDir);
+		const parsed = JSON.parse(await readFile(filePath, "utf-8"));
+		expect(parsed.schema_version).toBe(1);
+		expect(parsed.run_id).toBe("run-42");
+		expect(parsed.task_id).toBe("T02");
+		// v1 validation still functions (same function used by v2)
+		expect(validateModelRoutingEvidenceForAcceptance(parsed)).toEqual([]);
+	});
 });
