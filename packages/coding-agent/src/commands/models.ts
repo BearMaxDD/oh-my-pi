@@ -6,11 +6,11 @@ import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { resolveModelsArgs, runModelsCommand } from "../cli/models-cli";
 
 export default class Models extends Command {
-	static description = "List, search, and refresh available models";
+	static description = "List, search, refresh, and audit available models";
 
 	static args = {
 		action: Args.string({
-			description: "ls (default) | find | refresh | <provider>",
+			description: "ls (default) | find | refresh | roles | <provider>",
 			required: false,
 		}),
 		pattern: Args.string({
@@ -21,6 +21,7 @@ export default class Models extends Command {
 
 	static flags = {
 		json: Flags.boolean({ description: "Output JSON" }),
+		check: Flags.boolean({ description: "Audit strict role-model bindings (with roles)" }),
 		extension: Flags.string({
 			char: "e",
 			description: "Load an extension file before listing (repeatable)",
@@ -41,6 +42,7 @@ export default class Models extends Command {
 		`# Find models by substring\n  ${APP_NAME} models find minimax`,
 		`# Force a fresh catalog fetch (replaces rm -rf ~/.omp/models.db)\n  ${APP_NAME} models refresh`,
 		`# Machine-readable output\n  ${APP_NAME} models --json`,
+		`# Audit strict role-model bindings\n  ${APP_NAME} models roles --check`,
 	];
 
 	async run(): Promise<void> {
@@ -51,6 +53,7 @@ export default class Models extends Command {
 			pattern,
 			flags: {
 				json: flags.json,
+				check: flags.check,
 				extensions: flags.extension,
 				noExtensions: flags["no-extensions"],
 				config: flags.config,

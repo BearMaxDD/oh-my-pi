@@ -722,7 +722,7 @@ export async function loadCliExtensionProviders(
 	settings: Settings,
 	cwd: string,
 	options: Pick<CreateAgentSessionOptions, "disableExtensionDiscovery" | "additionalExtensionPaths"> = {},
-): Promise<void> {
+): Promise<LoadExtensionsResult> {
 	const eventBus = new EventBus();
 	const extensionsResult = await loadSessionExtensions(options, cwd, settings, eventBus);
 	const activeSources = extensionsResult.extensions.map(extension => extension.path);
@@ -735,6 +735,7 @@ export async function loadCliExtensionProviders(
 	}
 	extensionsResult.runtime.pendingProviderRegistrations = [];
 	await modelRegistry.refreshRuntimeProviders();
+	return extensionsResult;
 }
 
 /**

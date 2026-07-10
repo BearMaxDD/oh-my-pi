@@ -120,7 +120,17 @@ export type RoleCapability =
 	| "release_audit"
 	| "commit"
 	| "payment_review"
-	| "data_migration_review";
+	| "data_migration_review"
+	| "fast_task"
+	| "vision";
+
+export interface RoleRoutingHints {
+	keywords?: string[];
+	pathPatterns?: string[];
+	classificationFlags?: string[];
+	runtimeSurfaces?: string[];
+	stageIds?: string[];
+}
 
 export interface ModelRoleInfo {
 	tag?: string;
@@ -150,6 +160,15 @@ export interface ModelRoleInfo {
 
 	/** Capabilities that this role is designed for. */
 	capabilities?: RoleCapability[];
+
+	/** Version of this role's registered strict-execution contract. */
+	contractVersion?: string;
+
+	/** Stage identifiers this role may execute under strict routing. */
+	allowedStageIds?: string[];
+
+	/** Optional hints for selecting this role under strict routing. */
+	routingHints?: RoleRoutingHints;
 
 	/** Whether the role can be executed as a subagent. */
 	canRunAsSubagent?: boolean;
@@ -192,7 +211,8 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendedTier: "fast",
 		recommendAdvancedModel: false,
 		fallbackRoleIds: ["default"],
-		capabilities: [],
+		capabilities: ["fast_task"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: false,
 		canEditProductionCode: false,
@@ -209,6 +229,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["default"],
 		capabilities: ["planning"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: false,
 		canEditProductionCode: true,
@@ -224,7 +245,8 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendedTier: "high",
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["default"],
-		capabilities: [],
+		capabilities: ["vision"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -241,6 +263,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["slow", "default"],
 		capabilities: ["planning"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: false,
 		canEditProductionCode: false,
@@ -258,6 +281,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["slow", "default"],
 		capabilities: ["acceptance"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -274,6 +298,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["default"],
 		capabilities: ["frontend_design"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -290,6 +315,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: false,
 		fallbackRoleIds: ["smol", "default"],
 		capabilities: ["commit"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -339,6 +365,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["default"],
 		capabilities: ["implementation"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: false,
 		canEditProductionCode: true,
@@ -355,6 +382,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["slow", "default"],
 		capabilities: ["advisory"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -373,6 +401,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["task", "default"],
 		capabilities: ["test_authoring"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: false,
 		canEditProductionCode: false,
@@ -390,6 +419,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["task", "default"],
 		capabilities: ["implementation"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: false,
 		canEditProductionCode: true,
@@ -407,6 +437,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: false,
 		fallbackRoleIds: ["task", "default"],
 		capabilities: ["test_running"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -424,6 +455,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["advisor", "slow", "default"],
 		capabilities: ["spec_review"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -441,6 +473,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["advisor", "slow", "default"],
 		capabilities: ["quality_review"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -458,6 +491,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["acceptance", "slow", "default"],
 		capabilities: ["acceptance"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -473,6 +507,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["advisor", "slow", "default"],
 		capabilities: ["advisory"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -489,6 +524,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["plan", "slow", "default"],
 		capabilities: ["planning"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: false,
 		canEditProductionCode: false,
@@ -505,6 +541,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["advisor", "slow", "default"],
 		capabilities: ["impact_review"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -521,6 +558,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["task", "default"],
 		capabilities: ["runtime_simulation"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -537,6 +575,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["advisor", "slow", "default"],
 		capabilities: ["business_review"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -553,6 +592,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["designer", "default"],
 		capabilities: ["frontend_design"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -569,6 +609,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["advisor", "slow", "default"],
 		capabilities: ["security_review"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -585,6 +626,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["acceptance", "slow", "default"],
 		capabilities: ["release_audit"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -603,6 +645,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["advisor", "slow", "default"],
 		capabilities: ["payment_review"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,
@@ -620,6 +663,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		recommendAdvancedModel: true,
 		fallbackRoleIds: ["advisor", "slow", "default"],
 		capabilities: ["data_migration_review"],
+		contractVersion: "superpowers.role_contract.v1",
 		canRunAsSubagent: true,
 		readOnly: true,
 		canEditProductionCode: false,

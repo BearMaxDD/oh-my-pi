@@ -15,13 +15,15 @@ import type { Api, Effort, Model } from "@oh-my-pi/pi-ai";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { getRoleInfo } from "../config/model-roles";
+import { auditStrictRoleBindings } from "../config/role-model-audit";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { discoverAndLoadExtensions, loadExtensions } from "../extensibility/extensions";
-import { discoverAuthStorage } from "../sdk";
+import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 import { EventBus } from "../utils/event-bus";
 
-export type ModelsAction = "ls" | "find" | "refresh";
+export type ModelsAction = "ls" | "find" | "refresh" | "roles";
 
 export interface ModelsCommandArgs {
 	action: ModelsAction;
@@ -29,6 +31,8 @@ export interface ModelsCommandArgs {
 	pattern?: string;
 	flags: {
 		json?: boolean;
+		/** Audit strict role-model bindings. */
+		check?: boolean;
 		/** CLI `-e <path>` extension paths to load before listing (issue #905). */
 		extensions?: string[];
 		/** Skip extension discovery; only load explicit `extensions`. */
@@ -36,6 +40,16 @@ export interface ModelsCommandArgs {
 		/** Extra `config.yml` overlays to apply for this invocation. */
 		config?: string[];
 	};
+	/** Programmatic injection for role-audit callers. */
+	settings?: Settings;
+	/** Programmatic injection for role-audit callers. */
+	modelRegistry?: ModelRegistry;
+}
+
+/** Initialized command services for deterministic programmatic invocation. */
+export interface ModelsCommandDependencies {
+	settings: Settings;
+	registry: ModelRegistry;
 }
 
 /**
@@ -43,11 +57,14 @@ export interface ModelsCommandArgs {
  * as a provider/substring filter for the default `ls` view, so every provider
  * name doubles as an `omp models <provider>` shortcut.
  */
+export const ROLE_CHECK_ACTION = "roles";
+
 const KNOWN_ACTIONS: Record<string, ModelsAction> = {
 	ls: "ls",
 	list: "ls",
 	find: "find",
 	refresh: "refresh",
+	roles: ROLE_CHECK_ACTION,
 };
 
 /** Resolve the two positional args into an action + filter (provider names fall through to `ls`). */
@@ -324,12 +341,30 @@ export async function runModelsListing(options: RunModelsListingOptions): Promis
 	renderProviderModels(modelRegistry, action, pattern, json);
 }
 
+function renderRoleBindingAudit(settings: Settings, modelRegistry: ModelRegistry, json: boolean): void {
+	const entries = auditStrictRoleBindings(settings, modelRegistry);
+	if (json) {
+		writeLine(JSON.stringify({ entries }));
+	} else {
+		for (const entry of entries) {
+			writeLine(
+				`${entry.roleId}\t${entry.modelStatus}\t${entry.contractStatus}\t${entry.executable ? "executable" : "blocked"}`,
+			);
+		}
+	}
+	const requiredEntries = entries.filter(entry => getRoleInfo(entry.roleId, settings).canRunAsSubagent === true);
+	process.exitCode = requiredEntries.every(entry => entry.executable) ? 0 : 1;
+}
+
 /**
  * Entry point for the standalone `omp models` command: bootstraps auth storage,
  * settings, and the model registry, force/cache-refreshes built-in providers per
  * the chosen action, then delegates to {@link runModelsListing}.
  */
-export async function runModelsCommand(command: ModelsCommandArgs): Promise<void> {
+export async function runModelsCommand(
+	command: ModelsCommandArgs,
+	dependencies?: ModelsCommandDependencies,
+): Promise<void> {
 	const { action, pattern } = command;
 	const json = command.flags.json ?? false;
 
@@ -339,16 +374,55 @@ export async function runModelsCommand(command: ModelsCommandArgs): Promise<void
 		return;
 	}
 
-	const cwd = getProjectDir();
-	const authStorage = await discoverAuthStorage();
-	try {
-		const settings = await Settings.init({ cwd, configFiles: command.flags.config });
-		const modelRegistry = new ModelRegistry(authStorage);
+	if (action === ROLE_CHECK_ACTION && !command.flags.check) {
+		process.stderr.write("`omp models roles` requires --check\n");
+		process.exitCode = 1;
+		return;
+	}
 
-		if (action === "refresh" && !json && process.stderr.isTTY) {
-			process.stderr.write("Refreshing models from all providers…\n");
+	if (action === ROLE_CHECK_ACTION && pattern !== undefined) {
+		process.stderr.write("`omp models roles --check` does not accept positional arguments\n");
+		process.exitCode = 1;
+		return;
+	}
+
+	const injectedSettings = dependencies?.settings ?? command.settings;
+	const cwd = injectedSettings?.getCwd() ?? getProjectDir();
+	const injectedRegistry = dependencies?.registry ?? command.modelRegistry;
+	let authStorage: Awaited<ReturnType<typeof discoverAuthStorage>> | undefined;
+	try {
+		authStorage = injectedRegistry ? undefined : await discoverAuthStorage();
+		const settings = injectedSettings ?? (await Settings.init({ cwd, configFiles: command.flags.config }));
+		const modelRegistry = injectedRegistry ?? new ModelRegistry(authStorage!);
+
+		if (!injectedRegistry) {
+			if (action === "refresh" && !json && process.stderr.isTTY) {
+				process.stderr.write("Refreshing models from all providers…\n");
+			}
+			await modelRegistry.refresh(action === "refresh" ? "online" : "online-if-uncached");
 		}
-		await modelRegistry.refresh(action === "refresh" ? "online" : "online-if-uncached");
+
+		if (action === ROLE_CHECK_ACTION) {
+			try {
+				const extensionsResult = await loadCliExtensionProviders(modelRegistry, settings, cwd, {
+					disableExtensionDiscovery: Boolean(command.flags.noExtensions),
+					additionalExtensionPaths: command.flags.extensions ?? [],
+				});
+				if (extensionsResult.errors.length > 0) {
+					for (const { path, error } of extensionsResult.errors) {
+						process.stderr.write(`Failed to load extension: ${path}: ${error}\n`);
+					}
+					process.exitCode = 2;
+					return;
+				}
+			} catch (error) {
+				process.stderr.write(`Failed to load extension providers: ${error instanceof Error ? error.message : String(error)}\n`);
+				process.exitCode = 2;
+				return;
+			}
+			renderRoleBindingAudit(settings, modelRegistry, json);
+			return;
+		}
 
 		const cliExtensionPaths = command.flags.noExtensions ? [] : (command.flags.extensions ?? []);
 		await runModelsListing({
@@ -362,7 +436,12 @@ export async function runModelsCommand(command: ModelsCommandArgs): Promise<void
 			disabledExtensionIds: settings.get("disabledExtensions") ?? [],
 			disableExtensionDiscovery: Boolean(command.flags.noExtensions),
 		});
+	} catch (error) {
+		if (action !== ROLE_CHECK_ACTION) throw error;
+		process.stderr.write(`Failed to bootstrap role audit: ${error instanceof Error ? error.message : String(error)}\n`);
+		process.exitCode = 2;
+		return;
 	} finally {
-		authStorage.close();
+		authStorage?.close();
 	}
 }
