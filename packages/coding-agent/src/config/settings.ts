@@ -57,6 +57,50 @@ export interface RawSettings {
 	[key: string]: unknown;
 }
 
+export interface ModelRoleBatchUpdateResult {
+	changedRoleIds: string[];
+	unchangedRoleIds: string[];
+	previous: Record<string, string | undefined>;
+	next: Record<string, string>;
+	persisted: boolean;
+}
+
+export class SettingsPersistenceError extends Error {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "SettingsPersistenceError";
+	}
+}
+
+interface ModelRolesStateSnapshot {
+	globalRoles: Record<string, string>;
+	globalHadRoles: boolean;
+	overrideRoles: Record<string, string>;
+	overridesHadRoles: boolean;
+	previousEffective: Record<string, string | undefined>;
+	globalRolesReference: unknown;
+	overrideRolesReference: unknown;
+}
+
+interface ModelRoleAtomicWrite {
+	global: RawSettings;
+	persisted: boolean;
+	modelRolesReference: unknown;
+}
+
+function normalizeModelRoleAssignments(assignments: Readonly<Record<string, string>>): Record<string, string> {
+	const normalized = new Map<string, string>();
+	for (const [rawRoleId, rawSelector] of Object.entries(assignments)) {
+		const roleId = rawRoleId.trim();
+		const selector = rawSelector.trim();
+		if (!roleId || !selector) {
+			throw new Error("Model role assignments require non-empty role IDs and selectors");
+		}
+		normalized.set(roleId, selector);
+	}
+	return Object.fromEntries([...normalized.entries()].sort(([left], [right]) => left.localeCompare(right)));
+}
+
 export interface SettingsOptions {
 	/** Current working directory for project settings discovery */
 	cwd?: string;
@@ -249,6 +293,8 @@ export class Settings {
 	/** Pending save (debounced) */
 	#saveTimer?: NodeJS.Timeout;
 	#savePromise?: Promise<void>;
+	/** Serializes the full model-role snapshot, write, apply, and rollback transaction. */
+	#modelRoleAtomicTail: Promise<void> = Promise.resolve();
 
 	/** Whether to persist changes */
 	#persist: boolean;
@@ -608,6 +654,172 @@ export class Settings {
 			nextRuntimeOverride[role] = modelId;
 			this.override("modelRoles", nextRuntimeOverride);
 		}
+	}
+
+	/**
+	 * Persist a batch of model-role assignments as one all-or-nothing update.
+	 *
+	 * This deliberately bypasses the debounced generic settings queue: callers
+	 * can await a successful rename before treating the assignments as active.
+	 */
+	async setModelRolesAtomic(assignments: Readonly<Record<string, string>>): Promise<ModelRoleBatchUpdateResult> {
+		const normalized = normalizeModelRoleAssignments(assignments);
+		const operation = this.#modelRoleAtomicTail.then(() => this.#setModelRolesAtomic(normalized));
+		this.#modelRoleAtomicTail = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		return operation;
+	}
+
+	async #setModelRolesAtomic(normalized: Readonly<Record<string, string>>): Promise<ModelRoleBatchUpdateResult> {
+		const snapshot = this.#snapshotModelRolesState(Object.keys(normalized));
+		if (Object.keys(normalized).length === 0) {
+			return {
+				changedRoleIds: [],
+				unchangedRoleIds: [],
+				previous: {},
+				next: {},
+				persisted: false,
+			};
+		}
+
+		try {
+			const write = await this.#saveModelRolesAtomic(normalized);
+			const modelRolesChangedDuringWrite =
+				getByPath(this.#global, ["modelRoles"]) !== write.modelRolesReference;
+			const globalRoles = modelRolesChangedDuringWrite
+				? { ...this.#modelRolesFromLayer(this.#global), ...normalized }
+				: this.#modelRolesFromLayer(write.global);
+			this.#global = { ...this.#global, modelRoles: globalRoles };
+			this.#applyAtomicModelRoleOverrides(normalized);
+			if (!modelRolesChangedDuringWrite) this.#modified.delete("modelRoles");
+			this.#rebuildMerged();
+
+			const previous = snapshot.previousEffective;
+			const next = { ...normalized };
+			const changedRoleIds: string[] = [];
+			const unchangedRoleIds: string[] = [];
+			for (const [roleId, modelId] of Object.entries(normalized)) {
+				if (previous[roleId] === modelId) {
+					unchangedRoleIds.push(roleId);
+				} else {
+					changedRoleIds.push(roleId);
+				}
+			}
+
+			this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), previous);
+			return { changedRoleIds, unchangedRoleIds, previous, next, persisted: write.persisted };
+		} catch (error) {
+			this.#restoreModelRolesState(snapshot);
+			this.#rebuildMerged();
+			throw new SettingsPersistenceError("SettingsPersistenceError: Model role batch save failed", { cause: error });
+		}
+	}
+
+	#snapshotModelRolesState(roleIds: readonly string[]): ModelRolesStateSnapshot {
+		const previousEffective: Record<string, string | undefined> = {};
+		for (const roleId of roleIds) {
+			previousEffective[roleId] = this.getModelRole(roleId);
+		}
+		return {
+			globalRoles: this.#modelRolesFromLayer(this.#global),
+			globalHadRoles: Object.hasOwn(this.#global, "modelRoles"),
+			overrideRoles: this.#modelRolesFromLayer(this.#overrides),
+			overridesHadRoles: Object.hasOwn(this.#overrides, "modelRoles"),
+			globalRolesReference: getByPath(this.#global, ["modelRoles"]),
+			overrideRolesReference: getByPath(this.#overrides, ["modelRoles"]),
+			previousEffective,
+		};
+	}
+
+	#restoreModelRolesState(snapshot: ModelRolesStateSnapshot): void {
+		if (getByPath(this.#global, ["modelRoles"]) === snapshot.globalRolesReference) {
+			if (snapshot.globalHadRoles) {
+				this.#global.modelRoles = { ...snapshot.globalRoles };
+			} else {
+				delete this.#global.modelRoles;
+			}
+		}
+		if (getByPath(this.#overrides, ["modelRoles"]) === snapshot.overrideRolesReference) {
+			if (snapshot.overridesHadRoles) {
+				this.#overrides.modelRoles = { ...snapshot.overrideRoles };
+			} else {
+				delete this.#overrides.modelRoles;
+			}
+		}
+	}
+
+	#applyAtomicModelRoleOverrides(assignments: Readonly<Record<string, string>>): void {
+		const runtimeOverrides = getByPath(this.#overrides, ["modelRoles"]);
+		if (!isRecord(runtimeOverrides)) return;
+
+		const nextOverrides = this.#modelRolesFromLayer(this.#overrides);
+		let changed = false;
+		for (const [roleId, modelId] of Object.entries(assignments)) {
+			if (!Object.hasOwn(runtimeOverrides, roleId) || nextOverrides[roleId] === modelId) continue;
+			nextOverrides[roleId] = modelId;
+			changed = true;
+		}
+		if (changed) this.#overrides.modelRoles = nextOverrides;
+	}
+
+	async #saveModelRolesAtomic(assignments: Readonly<Record<string, string>>): Promise<ModelRoleAtomicWrite> {
+		if (!this.#persist || !this.#configPath) {
+			const modelRolesReference = getByPath(this.#global, ["modelRoles"]);
+			const roles = this.#modelRolesFromLayer(this.#global);
+			return {
+				global: { ...this.#global, modelRoles: { ...roles, ...assignments } },
+				persisted: false,
+				modelRolesReference,
+			};
+		}
+
+		const configPath = this.#configPath;
+		return withFileLock(configPath, async () => {
+			const modelRolesReference = getByPath(this.#global, ["modelRoles"]);
+			const current = await this.#loadYaml(configPath);
+			const currentRoles = this.#modelRolesFromLayer(current);
+			const pendingRoles = this.#modified.has("modelRoles")
+				? this.#modelRolesFromLayer(this.#global)
+				: undefined;
+			const nextRoles = { ...(pendingRoles ?? currentRoles), ...assignments };
+			const changed =
+				Object.keys(currentRoles).length !== Object.keys(nextRoles).length ||
+				Object.entries(nextRoles).some(([roleId, modelId]) => currentRoles[roleId] !== modelId);
+			const global = changed ? { ...current, modelRoles: nextRoles } : current;
+			if (!changed) return { global, persisted: false, modelRolesReference };
+
+			const existingMode = await fs.promises
+				.stat(configPath)
+				.then(stat => stat.mode & 0o777)
+				.catch(error => {
+					if (isEnoent(error)) return undefined;
+					throw error;
+				});
+			const temporaryPath = path.join(
+				path.dirname(configPath),
+				`.${path.basename(configPath)}.${Bun.randomUUIDv7()}.tmp`,
+			);
+			let temporaryCreated = false;
+			try {
+				const temporaryFile = await fs.promises.open(temporaryPath, "wx", 0o600);
+				temporaryCreated = true;
+				try {
+					await temporaryFile.writeFile(YAML.stringify(global, null, 2));
+					if (existingMode !== undefined) await fs.promises.chmod(temporaryPath, existingMode);
+				} finally {
+					await temporaryFile.close();
+				}
+				await fs.promises.rename(temporaryPath, configPath);
+			} catch (error) {
+				if (temporaryCreated) {
+					await fs.promises.unlink(temporaryPath).catch(() => undefined);
+				}
+				throw error;
+			}
+			return { global, persisted: true, modelRolesReference };
+		});
 	}
 
 	/**
