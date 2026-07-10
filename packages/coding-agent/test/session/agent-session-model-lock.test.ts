@@ -106,6 +106,23 @@ describe("Context promotion", () => {
 		};
 	}
 
+	async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (predicate()) return;
+			await Bun.sleep(10);
+		}
+		throw new Error("Timed out waiting for condition");
+	}
+
+	// Drain the fire-and-forget agent_end handler microtask queue. Used by
+	// the negative test, which asserts that *no* promotion happened and
+	// therefore needs the handler to have actually run.
+	async function settle(): Promise<void> {
+		await new Promise(resolve => setTimeout(resolve, 0));
+		await session.waitForIdle();
+	}
+
 	it("ordinary session promotes (regression guard)", async () => {
 		const spark = registry.find("openai-codex", "gpt-5.3-codex-spark");
 		const codex = registry.find("openai-codex", "gpt-5.5");
@@ -120,13 +137,9 @@ describe("Context promotion", () => {
 			modelRegistry: registry,
 		});
 
-		const { promise, resolve } = Promise.withResolvers<void>();
-		const unsub = session.subscribe(e => { if (e.type === "agent_end") { unsub(); resolve(); } });
-		const timer = setTimeout(resolve, 2000);
 		session.agent.emitExternalEvent({ type: "message_end", message: overflowMsg(spark) });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [overflowMsg(spark)] });
-		await promise;
-		clearTimeout(timer);
+		await waitFor(() => session.model?.id === codex.id);
 		expect(session.model?.id).toBe(codex.id);
 	});
 
@@ -144,13 +157,9 @@ describe("Context promotion", () => {
 			modelLock: { strict_role: "superpowers:implementer" } satisfies AgentSessionModelLock,
 		} satisfies AgentSessionConfig);
 
-		const { promise, resolve } = Promise.withResolvers<void>();
-		const unsub = session.subscribe(e => { if (e.type === "agent_end") { unsub(); resolve(); } });
-		const timer = setTimeout(resolve, 500);
 		session.agent.emitExternalEvent({ type: "message_end", message: overflowMsg(spark) });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [overflowMsg(spark)] });
-		await promise;
-		clearTimeout(timer);
+		await settle();
 		expect(session.model?.id).toBe(spark.id);
 	});
 });
