@@ -669,6 +669,23 @@ export type { ShakeMode, ShakeResult };
 // Types
 // ============================================================================
 
+/**
+ * Immutable runtime-routing constraint for sessions created by strict role-bound
+ * execution. A lock prevents automatic model substitution after preflight.
+ */
+export type AgentSessionModelLock =
+	| {
+			readonly strict_role: string;
+			readonly provider?: never;
+			readonly model_id?: never;
+		}
+	| {
+			readonly strict_role: string;
+			/** Exact provider/model pair frozen by strict executor preflight. */
+			readonly provider: string;
+			readonly model_id: string;
+		};
+
 export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -681,6 +698,8 @@ export interface AgentSessionConfig {
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Initial per-family service tiers (OpenAI / Anthropic / Google) for the live session. */
 	serviceTierByFamily?: ServiceTierByFamily;
+	/** Prevent automatic runtime model substitutions for a preflighted strict role. */
+	modelLock?: AgentSessionModelLock;
 	/** Prompt templates for expansion */
 	promptTemplates?: PromptTemplate[];
 	/** File-based slash commands for expansion */
@@ -1627,6 +1646,8 @@ export class AgentSession {
 	#retryPromise: Promise<void> | undefined = undefined;
 	#retryResolve: (() => void) | undefined = undefined;
 	#activeRetryFallback: ActiveRetryFallbackState | undefined = undefined;
+	/** Present only for strict role-bound sessions; blocks automatic model substitution. */
+	readonly #modelLock: AgentSessionModelLock | undefined;
 	// Todo completion reminder state
 	#todoReminderCount = 0;
 	/**
@@ -2031,6 +2052,18 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
+		this.#modelLock = config.modelLock;
+		if (this.#modelLock?.provider !== undefined || this.#modelLock?.model_id !== undefined) {
+			const model = this.model;
+			if (
+				this.#modelLock.provider === undefined ||
+				this.#modelLock.model_id === undefined ||
+				model?.provider !== this.#modelLock.provider ||
+				model.id !== this.#modelLock.model_id
+			) {
+				throw new Error("Strict session model lock does not match the session model");
+			}
+		}
 		this.#autoApprove = config.autoApprove === true;
 		// Power assertions are taken per turn (see #beginInFlight); nothing acquired here.
 		this.#evalKernelOwnerId = config.evalKernelOwnerId ?? `agent-session:${Snowflake.next()}`;
@@ -11232,6 +11265,7 @@ export class AgentSession {
 	 * Returns true if promotion succeeded (caller should retry without compacting).
 	 */
 	async #tryContextPromotion(assistantMessage: AssistantMessage): Promise<boolean> {
+		if (this.#modelLock) return false;
 		const currentModel = this.model;
 		if (!currentModel) return false;
 		// The overflow/length error may have come from a model the user already
@@ -11250,6 +11284,7 @@ export class AgentSession {
 	 * ({@link #runPrePromptCompactionIfNeeded}).
 	 */
 	async #promoteContextModel(): Promise<boolean> {
+		if (this.#modelLock) return false;
 		const promotionSettings = this.settings.getGroup("contextPromotion");
 		if (!promotionSettings.enabled) return false;
 		const currentModel = this.model;
@@ -13184,6 +13219,7 @@ export class AgentSession {
 	}
 
 	async #tryRetryModelFallback(currentSelector: string, options?: { pinFallback?: boolean }): Promise<boolean> {
+		if (this.#modelLock) return false;
 		const role = this.#activeRetryFallback?.role ?? this.#resolveRetryFallbackRole(currentSelector);
 		if (!role) return false;
 
@@ -13239,6 +13275,7 @@ export class AgentSession {
 	 * model is not a fast variant, the base id is missing, or it has no key.
 	 */
 	async #tryFireworksFastFallback(currentSelector: string): Promise<boolean> {
+		if (this.#modelLock) return false;
 		const model = this.#activeFireworksFastModel();
 		if (!model) return false;
 		const baseModel = this.#modelRegistry.find("fireworks", toFireworksBaseModelId(model.id));

@@ -2461,6 +2461,15 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				model,
 				thinkingLevel: effectiveThinkingLevel,
 				toolNames,
+				...(strictRoleExecutionGate
+					? {
+						modelLock: {
+							strict_role: options.strictRoleExecutionPlan!.contract.roleId,
+							provider: strictRoleExecutionGate.model.provider,
+							model_id: strictRoleExecutionGate.model.id,
+						},
+					}
+					: {}),
 				outputSchema,
 				requireYieldTool: true,
 				contextFiles: options.contextFiles,

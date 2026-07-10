@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { RoleBoundStageRunOutput, SpawnTaskOutput } from "./driver";
 import type { PlanExecutionBook } from "./execution-book";
-import type { StageOutputRef, UnplannedRoleBoundStageRunInput } from "./role-bound-stage-scheduler";
+import type { RoleBoundStageRunInput, StageOutputRef, UnplannedRoleBoundStageRunInput } from "./role-bound-stage-scheduler";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -36,6 +36,11 @@ export interface PlanRunTaskSpawnParams {
  */
 export interface PlanRunSubagentRunner {
 	run(params: PlanRunTaskSpawnParams): Promise<SpawnTaskOutput>;
+	/** Execute a preflighted PlanRun stage through TaskTool.executeRoleBound. */
+	runRoleBound?(
+		params: PlanRunTaskSpawnParams,
+		context: { strictRoleExecutionPlan: RoleBoundStageRunInput["strictRoleExecutionPlan"] },
+	): Promise<SpawnTaskOutput>;
 }
 
 /**
@@ -113,7 +118,7 @@ function buildAssignment(
  * - description — human-readable stage label
  * - required_skill_evidence — populated from prompt pack required_outputs
  */
-export function buildPlanRunStageSpawnParams(input: UnplannedRoleBoundStageRunInput): PlanRunTaskSpawnParams {
+export function buildPlanRunStageSpawnParams(input: UnplannedRoleBoundStageRunInput | RoleBoundStageRunInput): PlanRunTaskSpawnParams {
 	const role = input.promptPack.role_contract.zh_name;
 	const id = `${input.taskId}-${input.stageId}`;
 	const requiredArtifactPaths = input.promptPack.required_outputs.filter(o => o.required).map(o => o.artifact_path);
@@ -144,7 +149,7 @@ export function buildPlanRunStageSpawnParams(input: UnplannedRoleBoundStageRunIn
  */
 export function createPlanRunProductionSpawnAdapter(options: CreatePlanRunProductionSpawnAdapterOptions): {
 	spawnTask(input: { book: PlanExecutionBook; acceptingDir: string; taskId: string }): Promise<SpawnTaskOutput>;
-	spawnStage(input: UnplannedRoleBoundStageRunInput): Promise<RoleBoundStageRunOutput>;
+	spawnStage(input: UnplannedRoleBoundStageRunInput | RoleBoundStageRunInput): Promise<RoleBoundStageRunOutput>;
 } {
 	const { runner } = options;
 
@@ -166,9 +171,18 @@ export function createPlanRunProductionSpawnAdapter(options: CreatePlanRunProduc
 		return runner.run(params);
 	};
 
-	const spawnStage = async (input: UnplannedRoleBoundStageRunInput): Promise<RoleBoundStageRunOutput> => {
+	const spawnStage = async (
+		input: UnplannedRoleBoundStageRunInput | RoleBoundStageRunInput,
+	): Promise<RoleBoundStageRunOutput> => {
 		const params = buildPlanRunStageSpawnParams(input);
-		const output = await runner.run(params);
+		const output = "strictRoleExecutionPlan" in input
+			? await (() => {
+				if (!runner.runRoleBound) {
+					throw new Error("Strict PlanRun stage requires PlanRunSubagentRunner.runRoleBound");
+				}
+				return runner.runRoleBound(params, { strictRoleExecutionPlan: input.strictRoleExecutionPlan });
+			})()
+			: await runner.run(params);
 		// Shallow-safe copy so we never mutate the runner-owned object.
 		// advisorFindings is a nested array – copy it separately so .push
 		// on the copy's array doesn't affect the runner's array.

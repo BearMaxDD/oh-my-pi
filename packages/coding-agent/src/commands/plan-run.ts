@@ -16,6 +16,7 @@ import { runMainThreadAcceptanceReview } from "../codex-plan-run/main-acceptance
 import { runPlanRunEntry } from "../codex-plan-run/plan-run-entry";
 import type { PlanRunSubagentRunner, PlanRunTaskSpawnParams } from "../codex-plan-run/plan-run-spawn-adapter";
 import { createPlanRunProductionSpawnAdapter } from "../codex-plan-run/plan-run-spawn-adapter";
+import type { StrictRoleExecutionPlan } from "../codex-plan-run/role-bound-stage-scheduler";
 import { createPlanRunRepairDecision } from "../codex-plan-run/repair-loop";
 import { reviewTaskExecution } from "../codex-plan-run/task-review";
 import { Settings, settings } from "../config/settings";
@@ -25,7 +26,17 @@ import {
 	type SingleSubagentRuntime,
 	type SubagentBridge,
 	type SubagentBridgeParams,
+	type SubagentBridgeResult,
 } from "../task/single-subagent-runner";
+
+/**
+ * Trusted bridge for strict PlanRun stages. The caller must route this into
+ * TaskTool.executeRoleBound with the supplied immutable execution plan.
+ */
+export type StrictRoleBoundSubagentBridge = (
+	params: PlanRunTaskSpawnParams,
+	context: { readonly strictRoleExecutionPlan: StrictRoleExecutionPlan },
+) => Promise<SubagentBridgeResult>;
 
 /**
  * Create a subagent runner that either:
@@ -43,54 +54,97 @@ export function createCommandSubagentRunner(options: {
 	acceptingDir: string;
 	/** Optional bridge function that replaces the structured-blocked fallback with a real subagent run. */
 	bridge?: SubagentBridge;
+	/** Trusted strict bridge that must invoke TaskTool.executeRoleBound. */
+	strictRoleBoundBridge?: StrictRoleBoundSubagentBridge;
 }): PlanRunSubagentRunner {
-	return {
-		run: async (params: PlanRunTaskSpawnParams): Promise<SpawnTaskOutput> => {
-			if (options.bridge) {
-				const bridgeParams: SubagentBridgeParams = {
-					id: params.id,
-					role: params.role,
-					modelRole: params.modelRole,
-					context: params.context,
-					assignment: params.assignment,
-					description: params.description,
-					required_skill_evidence: params.required_skill_evidence,
-				};
-				const bridgeResult = await options.bridge(bridgeParams);
+	const toBridgeParams = (params: PlanRunTaskSpawnParams): SubagentBridgeParams => ({
+		id: params.id,
+		role: params.role,
+		modelRole: params.modelRole,
+		context: params.context,
+		assignment: params.assignment,
+		description: params.description,
+		required_skill_evidence: params.required_skill_evidence,
+	});
+	const mapBridgeResult = (params: PlanRunTaskSpawnParams, bridgeResult: SubagentBridgeResult): SpawnTaskOutput => {
+		if (bridgeResult.exitCode === 0) {
+			return {
+				task_id: params.id,
+				changed_files: bridgeResult.changed_files ?? [],
+				tests_run: bridgeResult.tests_run ?? [],
+				evidence: bridgeResult.evidence ?? (bridgeResult.outputPath ? [bridgeResult.outputPath] : []),
+				execution_skills_used: bridgeResult.execution_skills_used ?? [],
+				final_tail_skills_used: bridgeResult.final_tail_skills_used ?? [],
+				scope_notes: [options.cwd, options.acceptingDir],
+				result: "completed",
+				agentId: bridgeResult.id ?? params.id,
+				modelRole: bridgeResult.modelRole ?? params.modelRole,
+				resolvedModel: bridgeResult.resolvedModel,
+				modelOverrides: bridgeResult.modelOverrides,
+				advisorFindings: bridgeResult.advisorFindings,
+			};
+		}
 
-				if (bridgeResult.exitCode === 0) {
-					return {
-						task_id: params.id,
-						changed_files: bridgeResult.changed_files ?? [],
-						tests_run: bridgeResult.tests_run ?? [],
-						evidence: bridgeResult.evidence ?? (bridgeResult.outputPath ? [bridgeResult.outputPath] : []),
-						execution_skills_used: bridgeResult.execution_skills_used ?? [],
-						final_tail_skills_used: bridgeResult.final_tail_skills_used ?? [],
-						scope_notes: [options.cwd, options.acceptingDir],
-						result: "completed",
-						agentId: bridgeResult.id ?? params.id,
-						modelRole: bridgeResult.modelRole ?? params.modelRole,
-						resolvedModel: bridgeResult.resolvedModel,
-						modelOverrides: bridgeResult.modelOverrides,
-						advisorFindings: bridgeResult.advisorFindings,
-					};
-				}
-
-				return {
+		return {
+			task_id: params.id,
+			changed_files: [],
+			tests_run: [],
+			evidence: [],
+			execution_skills_used: [],
+			final_tail_skills_used: [],
+			scope_notes: [options.cwd, options.acceptingDir, bridgeResult.stderr ?? `exit code ${bridgeResult.exitCode}`],
+			result: "blocked",
+			agentId: bridgeResult.id ?? params.id,
+			modelRole: bridgeResult.modelRole ?? params.modelRole,
+			advisorFindings: [
+				{
+					schema_version: 1,
+					run_id: "",
 					task_id: params.id,
-					changed_files: [],
-					tests_run: [],
-					evidence: [],
-					execution_skills_used: [],
-					final_tail_skills_used: [],
-					scope_notes: [
-						options.cwd,
-						options.acceptingDir,
-						bridgeResult.stderr ?? `exit code ${bridgeResult.exitCode}`,
-					],
-					result: "blocked",
-					agentId: params.id,
-					modelRole: params.modelRole,
+					severity: "blocker",
+					category: "evidence",
+					finding: "Subagent bridge 返回非零退出码",
+					evidence: bridgeResult.stderr ?? `exit code ${bridgeResult.exitCode}`,
+					required_action: "检查子代理运行时错误",
+				},
+			],
+		};
+	};
+	const blockedWithoutBridge = (params: PlanRunTaskSpawnParams): SpawnTaskOutput => ({
+		task_id: params.id,
+		changed_files: [],
+		tests_run: [],
+		evidence: [],
+		execution_skills_used: [],
+		final_tail_skills_used: [],
+		scope_notes: [options.cwd, options.acceptingDir],
+		result: "blocked",
+		agentId: params.id,
+		modelRole: params.modelRole,
+		advisorFindings: [
+			{
+				schema_version: 1,
+				run_id: "",
+				task_id: params.id,
+				severity: "blocker",
+				category: "evidence",
+				finding: "Subagent runner 未接入",
+				evidence: "subagent runner 未接入，未提供 bridge 配置",
+				required_action: "提供 bridge 配置",
+			},
+		],
+	});
+
+	return {
+		run: async (params: PlanRunTaskSpawnParams): Promise<SpawnTaskOutput> =>
+			options.bridge ? mapBridgeResult(params, await options.bridge(toBridgeParams(params))) : blockedWithoutBridge(params),
+		runRoleBound: async (
+			params: PlanRunTaskSpawnParams,
+			context: { strictRoleExecutionPlan: StrictRoleExecutionPlan },
+		): Promise<SpawnTaskOutput> => {
+			if (!options.strictRoleBoundBridge) {
+				return {
+					...blockedWithoutBridge(params),
 					advisorFindings: [
 						{
 							schema_version: 1,
@@ -98,39 +152,14 @@ export function createCommandSubagentRunner(options: {
 							task_id: params.id,
 							severity: "blocker",
 							category: "evidence",
-							finding: "Subagent bridge 返回非零退出码",
-							evidence: bridgeResult.stderr ?? `exit code ${bridgeResult.exitCode}`,
-							required_action: "检查子代理运行时错误",
+							finding: "严格 PlanRun 阶段未接入 role-bound bridge",
+							evidence: "strict role-bound bridge is not configured",
+							required_action: "注入调用 TaskTool.executeRoleBound 的 strictRoleBoundBridge",
 						},
 					],
 				};
 			}
-
-			// Structured blocked fallback — no bridge provided.
-			return {
-				task_id: params.id,
-				changed_files: [],
-				tests_run: [],
-				evidence: [],
-				execution_skills_used: [],
-				final_tail_skills_used: [],
-				scope_notes: [options.cwd, options.acceptingDir],
-				result: "blocked",
-				agentId: params.id,
-				modelRole: params.modelRole,
-				advisorFindings: [
-					{
-						schema_version: 1,
-						run_id: "",
-						task_id: params.id,
-						severity: "blocker",
-						category: "evidence",
-						finding: "Subagent runner 未接入",
-						evidence: "subagent runner 未接入，未提供 bridge 配置",
-						required_action: "提供 bridge 配置",
-					},
-				],
-			};
+			return mapBridgeResult(params, await options.strictRoleBoundBridge(params, context));
 		},
 	};
 }
@@ -148,6 +177,8 @@ export async function createPlanRunDeps(options: {
 	acceptingDir: string;
 	/** Optional bridge function; takes priority over runSubagent/runtimeCommand. */
 	bridge?: SubagentBridge;
+	/** Optional strict bridge that must dispatch to TaskTool.executeRoleBound. */
+	strictRoleBoundBridge?: StrictRoleBoundSubagentBridge;
 	/** Optional runtime function injected into the default bridge. */
 	runSubagent?: SingleSubagentRuntime;
 	/** Optional command for creating a command-based runtime (env: OMP_PLAN_RUN_SUBAGENT_RUNTIME_COMMAND). */
@@ -182,6 +213,7 @@ export async function createPlanRunDeps(options: {
 		cwd: options.cwd,
 		acceptingDir: options.acceptingDir,
 		bridge,
+		strictRoleBoundBridge: options.strictRoleBoundBridge,
 	});
 
 	const { spawnTask, spawnStage } = createPlanRunProductionSpawnAdapter({ runner });

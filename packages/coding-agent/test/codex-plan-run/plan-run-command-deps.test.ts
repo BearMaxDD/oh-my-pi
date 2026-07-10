@@ -3,6 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PlanRunTaskSpawnParams } from "../../src/codex-plan-run/plan-run-spawn-adapter";
+import type { StrictRoleExecutionPlan } from "../../src/codex-plan-run/role-bound-stage-scheduler";
 import {
 	createCommandSubagentRunner,
 	createPlanRunDeps,
@@ -261,6 +262,45 @@ describe("createCommandSubagentRunner", () => {
 		expect(finding.finding).toContain("Subagent runner 未接入");
 		// detail_zh — the evidence field contains the subagent runner mention
 		expect(finding.evidence).toContain("subagent runner");
+	});
+
+	it("fails closed for a strict stage without a strict role-bound bridge", async () => {
+		const runner = createCommandSubagentRunner({ cwd: "/tmp/repo", acceptingDir: "/tmp/accept" });
+		const params: PlanRunTaskSpawnParams = {
+			agent: "task", id: "T1-implementer", role: "实现者", modelRole: "superpowers:implementer",
+			context: "Run ID: run-test", assignment: "Execute stage", description: "Implementer", required_skill_evidence: [],
+		};
+
+		expect(runner.runRoleBound).toBeDefined();
+		const result = await runner.runRoleBound!(params, { strictRoleExecutionPlan: {} as StrictRoleExecutionPlan });
+
+		expect(result.result).toBe("blocked");
+		expect(result.advisorFindings?.[0]?.evidence).toContain("strict role-bound bridge");
+	});
+
+	it("routes strict stages through the injected strict role-bound bridge", async () => {
+		const strictPlan = {} as StrictRoleExecutionPlan;
+		const strictBridge = async (
+			params: PlanRunTaskSpawnParams,
+			context: { strictRoleExecutionPlan: StrictRoleExecutionPlan },
+		) => {
+			expect(params.id).toBe("T1-implementer");
+			expect(context.strictRoleExecutionPlan).toBe(strictPlan);
+			return { exitCode: 0, outputPath: "/tmp/accept/tasks/T1/output.json", resolvedModel: "anthropic/claude" };
+		};
+		const runner = createCommandSubagentRunner({
+			cwd: "/tmp/repo", acceptingDir: "/tmp/accept", strictRoleBoundBridge: strictBridge,
+		});
+		const params: PlanRunTaskSpawnParams = {
+			agent: "task", id: "T1-implementer", role: "实现者", modelRole: "superpowers:implementer",
+			context: "Run ID: run-test", assignment: "Execute stage", description: "Implementer", required_skill_evidence: [],
+		};
+
+		const result = await runner.runRoleBound!(params, { strictRoleExecutionPlan: strictPlan });
+
+		expect(result.result).toBe("completed");
+		expect(result.evidence).toEqual(["/tmp/accept/tasks/T1/output.json"]);
+		expect(result.resolvedModel).toBe("anthropic/claude");
 	});
 
 	it("returns completed when bridge resolves exitCode 0", async () => {

@@ -106,7 +106,8 @@ import {
 	obfuscateProviderContext,
 	SecretObfuscator,
 } from "./secrets";
-import { AgentSession } from "./session/agent-session";
+import { AgentSession, type AgentSessionModelLock } from "./session/agent-session";
+export type { AgentSessionModelLock } from "./session/agent-session";
 import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
 import {
@@ -398,6 +399,8 @@ export interface CreateAgentSessionOptions {
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Models available for cycling (Ctrl+P in interactive mode) */
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
+	/** Locks strict role-bound sessions to their preflighted routing identity. */
+	modelLock?: AgentSessionModelLock;
 
 	/** Provider-facing system prompt override. Replaces the fully rendered default blocks. */
 	systemPrompt?: string | string[] | ((defaultPrompt: string[]) => string | string[]);
@@ -2715,6 +2718,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
 			settings,
+			modelLock: options.modelLock,
 			autoApprove: options.autoApprove,
 			evalKernelOwnerId,
 			// Defined only for top-level sessions (creation is gated above).

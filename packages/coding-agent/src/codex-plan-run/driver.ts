@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MODEL_ROLES } from "../config/model-roles";
+import type { ModelRegistry } from "../config/model-registry";
+import type { Settings } from "../config/settings";
 import type { AdvisorFinding } from "./advisor-findings";
 import { writeAdvisorFindings } from "./advisor-findings";
 import { type AdvisorGateRecord, evaluateAdvisorGate, writeAdvisorGateRecord } from "./advisor-gate";
@@ -20,7 +22,12 @@ import type {
 	MainThreadAcceptanceReviewResult,
 	TaskExecutionOutput,
 } from "./main-acceptance-review";
-import { createModelRoutingEvidence, writeModelRoutingEvidence } from "./model-routing-evidence";
+import {
+	type ModelRoutingEvidenceV2,
+	createModelRoutingEvidence,
+	validateModelRoutingEvidenceForAcceptance,
+	writeModelRoutingEvidence,
+} from "./model-routing-evidence";
 import {
 	type ArtifactRef,
 	compilePromptPacksForFramework,
@@ -35,7 +42,8 @@ import {
 } from "./real-runtime-simulation";
 import type { CreatePlanRunRepairDecisionInput, PlanRunRepairDecision } from "./repair-loop";
 import {
-	buildUnplannedRoleBoundStageRunInputs,
+	buildRoleBoundStageRunInputs,
+	type RoleBoundStageRunInput,
 	type StageOutputRef,
 	type UnplannedRoleBoundStageRunInput,
 } from "./role-bound-stage-scheduler";
@@ -81,6 +89,7 @@ export interface SpawnTaskOutput extends SubagentTaskOutput {
 	resolvedModel?: string;
 	modelOverrides?: string[];
 	advisorFindings?: AdvisorFinding[];
+	evidence_paths?: string[];
 }
 
 /**
@@ -104,7 +113,7 @@ export interface PlanRunDriverDeps {
 	spawnTask(input: { book: PlanExecutionBook; acceptingDir: string; taskId: string }): Promise<SpawnTaskOutput>;
 	reviewTask(request: TaskReviewRequest): Promise<TaskReviewResult>;
 	runMainAcceptance(input: MainThreadAcceptanceReviewRequest): Promise<MainThreadAcceptanceReviewResult>;
-	spawnStage?(input: UnplannedRoleBoundStageRunInput): Promise<RoleBoundStageRunOutput>;
+	spawnStage?(input: RoleBoundStageRunInput): Promise<RoleBoundStageRunOutput>;
 	createRepairDecision(input: CreatePlanRunRepairDecisionInput): PlanRunRepairDecision;
 }
 
@@ -146,6 +155,11 @@ export interface PlanRunDriverInput {
 	classification?: {
 		enabled: boolean;
 		requireReviewerEvidence: boolean;
+	};
+	/** Required strict-stage preflight dependencies for role-bound PlanRuns. */
+	strictStagePreflight?: {
+		settings: Settings;
+		modelRegistry: Pick<ModelRegistry, "getAvailable">;
 	};
 }
 
@@ -243,6 +257,76 @@ function graphRiskToImpactRisk(risk: string | undefined): "low" | "medium" | "hi
 
 function uniqueStrings(values: readonly (string | undefined)[]): string[] {
 	return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];
+}
+
+function isModelRoutingEvidenceV2(value: unknown): value is ModelRoutingEvidenceV2 {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		!Array.isArray(value) &&
+		"schema_version" in value &&
+		value.schema_version === 2 &&
+		"run_id" in value &&
+		typeof value.run_id === "string" &&
+		"task_id" in value &&
+		typeof value.task_id === "string" &&
+		"status" in value &&
+		typeof value.status === "string"
+	);
+}
+
+async function validateStrictStageEvidence(stage: RoleBoundStageRunInput): Promise<ModelRoutingEvidenceV2> {
+	let decoded: unknown;
+	try {
+		decoded = JSON.parse(await readFile(stage.strictRoleExecutionPlan.evidence.path, "utf8"));
+	} catch (error) {
+		throw new Error(
+			`Strict stage ${stage.taskId}/${stage.stageId} routing evidence is unavailable: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+	if (!isModelRoutingEvidenceV2(decoded)) {
+		throw new Error(`Strict stage ${stage.taskId}/${stage.stageId} requires V2 routing evidence`);
+	}
+	if (decoded.status !== "completed" || decoded.actual === undefined) {
+		throw new Error(`Strict stage ${stage.taskId}/${stage.stageId} routing evidence must be completed with actual runtime evidence`);
+	}
+	const validationErrors = validateModelRoutingEvidenceForAcceptance(decoded);
+	if (validationErrors.length > 0) {
+		throw new Error(`Strict stage ${stage.taskId}/${stage.stageId} routing evidence rejected: ${validationErrors.join("; ")}`);
+	}
+	return decoded;
+}
+
+async function writeStrictStageLedgerEntry(options: {
+	acceptingDir: string;
+	taskId: string;
+	stageId: string;
+	status: "accepted" | "repair_required" | "blocked";
+	output: RoleBoundStageRunOutput;
+	routingEvidencePath: string;
+	advisorGates: ReadonlyArray<{ gate: string; status: "accepted" | "repair_required" | "blocked"; path: string }>;
+}): Promise<{ key: string; manifest: StageManifestEntry }> {
+	const stageDir = join(options.acceptingDir, "tasks", options.taskId, "stages", options.stageId);
+	const outputPath = join(stageDir, "output.json");
+	const modelRoutingPath = join(stageDir, "model-routing-evidence.json");
+	if (options.routingEvidencePath !== modelRoutingPath) {
+		throw new Error(`Strict stage ${options.taskId}/${options.stageId} routing evidence path does not match its immutable stage path`);
+	}
+	const advisorDir = join(stageDir, "advisor-gates");
+	await mkdir(advisorDir, { recursive: true });
+	await writeFile(outputPath, `${JSON.stringify(options.output, null, 2)}\n`, "utf8");
+	const advisorGatePaths: string[] = [];
+	for (const gate of options.advisorGates) {
+		const gatePath = join(advisorDir, `${gate.gate}.json`);
+		await writeFile(gatePath, `${JSON.stringify(gate, null, 2)}\n`, "utf8");
+		advisorGatePaths.push(gatePath);
+	}
+	return {
+		key: `${options.taskId}:${options.stageId}`,
+		manifest: { output_path: outputPath, model_routing_path: modelRoutingPath, advisor_gate_paths: advisorGatePaths, status: options.status },
+	};
 }
 
 function advisorCheckpointPromptPack(options: { taskId: string; stageId: string; roleId?: string }): PromptPack {
@@ -378,15 +462,17 @@ export async function runPlanRunDriver(
 			if (!deps.spawnStage) {
 				throw new Error("Role-bound execution requires PlanRunDriverDeps.spawnStage");
 			}
-			// Task12 replaces this explicit legacy bridge with awaited strict preflight
-			// plus the role-bound runner. Until then, do not call the strict builder
-			// without its required settings/model-registry dependencies.
-			const stageInputs = buildUnplannedRoleBoundStageRunInputs({
+			if (!input.strictStagePreflight) {
+				throw new Error("Role-bound execution requires strictStagePreflight settings and modelRegistry");
+			}
+			const stageInputs = await buildRoleBoundStageRunInputs({
 				book: executionBook,
 				acceptingDir,
 				taskId,
 				promptPacks,
 				previousStageOutputs,
+				settings: input.strictStagePreflight.settings,
+				modelRegistry: input.strictStagePreflight.modelRegistry,
 			});
 			const stageOutputs: RoleBoundStageRunOutput[] = [];
 			for (const stageInput of stageInputs) {
@@ -426,7 +512,36 @@ export async function runPlanRunDriver(
 						path: beforeStagePath,
 					});
 				}
-				const stageOutput = await deps.spawnStage(stageInput);
+				let stageOutput = await deps.spawnStage(stageInput);
+				if (stageOutput.result === "completed") {
+					try {
+						await validateStrictStageEvidence(stageInput);
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						stageOutput = {
+							...stageOutput,
+							result: "blocked",
+							advisorFindings: [
+								...(stageOutput.advisorFindings ?? []),
+								{
+									schema_version: 1,
+									run_id: executionBook.run_id,
+									task_id: taskId,
+									severity: "blocker",
+									category: "evidence",
+									finding: "严格阶段模型路由证据未通过验收",
+									evidence: message,
+									required_action: "修复严格阶段路由证据后重新执行",
+								},
+							],
+						};
+					}
+				}
+				stageOutput = {
+					...stageOutput,
+					evidence: uniqueStrings([...stageOutput.evidence, stageInput.strictRoleExecutionPlan.evidence.path]),
+					evidence_paths: uniqueStrings([...stageOutput.evidence_paths, stageInput.strictRoleExecutionPlan.evidence.path]),
+				};
 				if (input.enableAdvisorGate === true) {
 					// after_stage: evaluate stage output using FULL changed_files (not filtered)
 					const stageEvidenceSet = new Set(stageOutput.evidence_paths);
@@ -454,14 +569,6 @@ export async function runPlanRunDriver(
 						path: stageAdvisorPath,
 					});
 				}
-				const stageModelEvidence = createModelRoutingEvidence({
-					runId: executionBook.run_id,
-					taskId,
-					agentId: stageOutput.agentId,
-					modelRole: stageOutput.modelRole,
-					resolvedModel: stageOutput.resolvedModel,
-					modelOverrides: stageOutput.modelOverrides,
-				});
 				const stageLedgerStatus =
 					stageOutput.result !== "completed"
 						? "blocked"
@@ -470,14 +577,13 @@ export async function runPlanRunDriver(
 							: stageAdvisorGates.some(gate => gate.status === "repair_required")
 								? "repair_required"
 								: "accepted";
-				const stageLedger = await writeStageLedgerEntry({
+				const stageLedger = await writeStrictStageLedgerEntry({
 					acceptingDir,
-					runId: executionBook.run_id,
 					taskId,
 					stageId: stageInput.stageId,
 					status: stageLedgerStatus,
 					output: stageOutput,
-					modelRouting: { ...stageModelEvidence, stage_id: stageInput.stageId, role_id: stageOutput.role_id },
+					routingEvidencePath: stageInput.strictRoleExecutionPlan.evidence.path,
 					advisorGates: stageAdvisorGates,
 				});
 				roleBoundStages[stageLedger.key] = stageLedger.manifest;
@@ -518,6 +624,7 @@ export async function runPlanRunDriver(
 				...base,
 				changed_files: [...new Set(stageOutputs.flatMap(o => o.changed_files))],
 				evidence: [...new Set(stageOutputs.flatMap(o => o.evidence))],
+				evidence_paths: [...new Set(stageOutputs.flatMap(o => o.evidence_paths))],
 				tests_run: [...new Set(stageOutputs.flatMap(o => o.tests_run))],
 				execution_skills_used: [...new Set(stageOutputs.flatMap(o => o.execution_skills_used))],
 				final_tail_skills_used: [...new Set(stageOutputs.flatMap(o => o.final_tail_skills_used))],
@@ -605,21 +712,28 @@ export async function runPlanRunDriver(
 
 		// -- Model routing evidence --
 
-		const modelEvidence = createModelRoutingEvidence({
-			runId: executionBook.run_id,
-			taskId,
-			agentId: spawnOutput.agentId,
-			modelRole: spawnOutput.modelRole,
-			resolvedModel: spawnOutput.resolvedModel,
-			modelOverrides: spawnOutput.modelOverrides,
-		});
-
-		const modelEvidencePath = await writeModelRoutingEvidence(modelEvidence, acceptingDir);
-		modelRoutingTasks[taskId] = {
-			resolved_model: modelEvidence.resolved_model,
-			model_role: modelEvidence.model_role,
-			evidence_path: modelEvidencePath,
-		};
+		if (!roleBoundEnabled) {
+			const modelEvidence = createModelRoutingEvidence({
+				runId: executionBook.run_id,
+				taskId,
+				agentId: spawnOutput.agentId,
+				modelRole: spawnOutput.modelRole,
+				resolvedModel: spawnOutput.resolvedModel,
+				modelOverrides: spawnOutput.modelOverrides,
+			});
+			const modelEvidencePath = await writeModelRoutingEvidence(modelEvidence, acceptingDir);
+			modelRoutingTasks[taskId] = {
+				resolved_model: modelEvidence.resolved_model,
+				model_role: modelEvidence.model_role,
+				evidence_path: modelEvidencePath,
+			};
+		} else {
+			modelRoutingTasks[taskId] = {
+				resolved_model: spawnOutput.resolvedModel,
+				model_role: spawnOutput.modelRole,
+				evidence_path: roleBoundStages[`${taskId}:acceptance`]?.model_routing_path,
+			};
+		}
 
 		// -- Superpowers codebase-memory execution gate --
 
