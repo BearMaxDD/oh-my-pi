@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPlanRunProductionSpawnAdapter } from "../../src/codex-plan-run/plan-run-spawn-adapter";
@@ -158,7 +158,7 @@ describe("PlanRunSubagentRunner adapter", () => {
 		const dir = await makeDir();
 		const input = { ...await makeUnplannedInput(dir), strictRoleExecutionPlan: plan };
 		const runSpy = vi.fn().mockResolvedValue({} as SpawnTaskOutput);
-		const runRoleBoundSpy = vi.fn().mockResolvedValue({} as SpawnTaskOutput);
+		const runRoleBoundSpy = vi.fn().mockResolvedValue({ evidence: [] } as SpawnTaskOutput);
 		const adapter = createPlanRunProductionSpawnAdapter({
 			runner: { run: runSpy, runRoleBound: runRoleBoundSpy },
 		});
