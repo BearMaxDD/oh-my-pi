@@ -20,6 +20,7 @@ import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition, SingleResult, TaskParams } from "@oh-my-pi/pi-coding-agent/task/types";
+import * as modelRoutingModule from "../../src/task/model-routing";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
 const taskAgent: AgentDefinition = {
@@ -465,5 +466,31 @@ describe("task spawn routing", () => {
 			);
 			expect(unboundedTool.description).not.toContain("Concurrency cap");
 		}
+	});
+
+	it("normal execute still routes through resolveTaskModelRouting", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [taskAgent],
+			projectAgentsDir: null,
+		});
+		vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(makeResult("agent-route"));
+		const routingSpy = vi.spyOn(modelRoutingModule, "resolveTaskModelRouting").mockReturnValue({
+			modelRole: "task",
+			requestedModel: undefined,
+			fallbackModelRoles: ["task", "default"],
+			modelOverrides: ["openai/gpt-5.2-codex"],
+		});
+
+		const tool = await TaskTool.create(createSession({ settings: { "task.maxConcurrency": 0 } }));
+
+		// Normal execute — goes through #runSpawn → resolveTaskModelRouting.
+		const result = await tool.execute("tc-route", {
+			agent: "task",
+			assignment: "Normal routing test.",
+		} as TaskParams);
+
+		const text = result.content.find(p => p.type === "text")?.text ?? "";
+		expect(text).toBeTruthy();
+		expect(routingSpy).toHaveBeenCalled();
 	});
 });

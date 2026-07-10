@@ -10,6 +10,7 @@ import { recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../capability/rule";
+import type { StrictRoleExecutionPlan } from "../codex-plan-run/role-bound-stage-scheduler";
 import { ModelRegistry } from "../config/model-registry";
 import {
 	formatModelSelectorValue,
@@ -403,6 +404,11 @@ export interface ExecutorOptions {
 	 * set this false so disposal unregisters them instead of leaving idle peers.
 	 */
 	keepAlive?: boolean;
+	/**
+	 * Opaque, preflighted binding for the internal role-bound entry. The executor
+	 * gate consumes this in the strict path; legacy task executions omit it.
+	 */
+	strictRoleExecutionPlan?: StrictRoleExecutionPlan;
 }
 
 function parseStringifiedJson(value: unknown): unknown {

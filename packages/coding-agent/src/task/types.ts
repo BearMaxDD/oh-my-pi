@@ -283,6 +283,7 @@ export interface TaskParams {
 	tasks?: TaskItem[];
 }
 
+
 /**
  * One-line, length-capped label safe for a single roster line, a registry
  * display, or a prompt field. Collapses whitespace and clips at `max` chars

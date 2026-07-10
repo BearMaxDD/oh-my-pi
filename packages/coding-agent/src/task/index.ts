@@ -29,6 +29,7 @@ import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: 
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/irc";
 import { formatBytes, formatDuration } from "../tools/render-utils";
+import type { StrictRoleExecutionPlan } from "../codex-plan-run/role-bound-stage-scheduler";
 import { resolveTaskModelRouting } from "./model-routing";
 import { DEFAULT_SPAWN_AGENT, resolveSpawnPolicy } from "./spawn-policy";
 import {
@@ -64,6 +65,11 @@ import { mapWithConcurrencyLimit, normalizeConcurrencyLimit, Semaphore } from ".
 import { renderResult, renderCall as renderTaskCall } from "./render";
 import { repairTaskParams } from "./repair-args";
 import { parseIsolationMode } from "./worktree";
+
+/** Trusted context accepted only by TaskTool's internal role-bound entry. */
+interface RoleBoundExecutionContext {
+	readonly strictRoleExecutionPlan: StrictRoleExecutionPlan;
+}
 
 function renderSubagentUserPrompt(assignment: string): string {
 	return prompt.render(subagentUserPromptTemplate, {
@@ -792,6 +798,49 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		});
 	}
 
+/**
+	 * @internal
+	 * PlanRun-only entry point for a preflighted role-bound task. Its context is
+	 * intentionally absent from the TaskTool wire schema, so evidence metadata
+	 * cannot arrive through an LLM tool call. Runtime provenance enforcement is
+	 * owned by the later PlanRun integration.
+	 */
+	async executeRoleBound(
+		toolCallId: string,
+		rawParams: TaskParams,
+		context: RoleBoundExecutionContext,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
+	): Promise<AgentToolResult<TaskToolDetails>> {
+		const defaultAgent = resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent;
+		const params =
+			typeof rawParams.agent === "string" && rawParams.agent.trim() !== ""
+				? rawParams
+				: { ...rawParams, agent: defaultAgent };
+		const validationError = validateShapeParams(false, params) ?? validateSpawnParams(params, false);
+		if (validationError) return createTaskModeError(validationError);
+
+		const invokedAt = Date.now();
+		const semaphore = this.#getSpawnSemaphore();
+		await semaphore.acquire(signal);
+		const acquiredAt = Date.now();
+		try {
+			return await this.#executeSync(
+				toolCallId,
+				params,
+				signal,
+				onUpdate,
+				undefined,
+				0,
+				false,
+				{ invokedAt, acquiredAt },
+				context,
+			);
+		} finally {
+			this.#releaseSpawnSemaphore();
+		}
+	}
+
 	/**
 	 * Register one background job that runs a single spawn to completion and
 	 * delivers its yield text. The job body mirrors the sync path; `buildDetails`
@@ -1070,8 +1119,19 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		spawnIndex = 0,
 		detached = false,
 		launchTiming?: { invokedAt: number; acquiredAt: number },
+		roleBoundContext?: RoleBoundExecutionContext,
 	): Promise<AgentToolResult<TaskToolDetails>> {
-		return this.#runSpawn(toolCallId, params, signal, onUpdate, preAllocatedId, spawnIndex, detached, launchTiming);
+		return this.#runSpawn(
+			toolCallId,
+			params,
+			signal,
+			onUpdate,
+			preAllocatedId,
+			spawnIndex,
+			detached,
+			launchTiming,
+			roleBoundContext,
+		);
 	}
 
 	/** Spawn a fresh subagent and run it to completion. */
@@ -1084,6 +1144,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		spawnIndex = 0,
 		detached = false,
 		launchTiming?: { invokedAt: number; acquiredAt: number },
+		roleBoundContext?: RoleBoundExecutionContext,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
 		const { agents, projectAgentsDir } = await discoverAgents(this.session.cwd);
@@ -1146,21 +1207,28 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				}
 			: agent;
 
-		// Apply per-agent model override from settings (highest priority)
-		const agentModelOverrides = this.session.settings.get("task.agentModelOverrides");
-		const parentActiveModelPattern = this.session.getActiveModelString?.();
-		const routing = resolveTaskModelRouting({
-			modelRole: params.modelRole,
-			role: params.role,
-			agentName,
-			agentModelOverrides,
-			agentModel: effectiveAgent.model,
-			settings: this.session.settings,
-			activeModelPattern: parentActiveModelPattern,
-			fallbackModelPattern: this.session.getModelString?.(),
-		});
-		const modelOverride = routing.modelOverrides;
-		const thinkingLevelOverride = effectiveAgent.thinkingLevel;
+		const strictRoleExecutionPlan = roleBoundContext?.strictRoleExecutionPlan;
+		const strictBinding = strictRoleExecutionPlan?.binding;
+		const parentActiveModelPattern = strictBinding ? undefined : this.session.getActiveModelString?.();
+		const routing = strictBinding
+			? {
+					modelRole: strictBinding.roleId,
+					requestedModel: strictBinding.configuredSelector,
+					fallbackModelRoles: [] as string[],
+					modelOverrides: [strictBinding.configuredSelector],
+				}
+			: resolveTaskModelRouting({
+					modelRole: params.modelRole,
+					role: params.role,
+					agentName,
+					agentModelOverrides: this.session.settings.get("task.agentModelOverrides"),
+					agentModel: effectiveAgent.model,
+					settings: this.session.settings,
+					activeModelPattern: parentActiveModelPattern,
+					fallbackModelPattern: this.session.getModelString?.(),
+				});
+		const modelOverride = strictBinding ? strictBinding.configuredSelector : routing.modelOverrides;
+		const thinkingLevelOverride = strictBinding?.thinkingLevel ?? effectiveAgent.thinkingLevel;
 
 		// Output schema priority: agent frontmatter > inherited parent session.
 		// The task call itself never carries a schema; workflows needing ad-hoc
@@ -1374,6 +1442,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				parentServiceTier: this.session.getServiceTierByFamily
 					? (this.session.getServiceTierByFamily() ?? null)
 					: undefined,
+				...(strictRoleExecutionPlan ? { strictRoleExecutionPlan } : {}),
 			};
 
 			const runTask = async (): Promise<SingleResult> => {
