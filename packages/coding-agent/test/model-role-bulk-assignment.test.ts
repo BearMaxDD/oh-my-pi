@@ -15,6 +15,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import {
 	initialBulkAssignmentState,
 	bulkAssignmentReducer,
@@ -143,10 +144,10 @@ describe("thinking step — thinking level choice", () => {
 	it("accepts a concrete thinking level", () => {
 		const next = dispatch(initialBulkAssignmentState, {
 			type: "SET_THINKING_LEVEL",
-			thinkingLevel: "high",
+			thinkingLevel: ThinkingLevel.High,
 		});
 
-		expect(next.thinkingLevel).toBe("high");
+		expect(next.thinkingLevel).toBe(ThinkingLevel.High);
 	});
 
 	it("accepts auto thinking level", () => {
@@ -170,15 +171,15 @@ describe("thinking step — thinking level choice", () => {
 	it("overwrites previous thinking level on successive calls", () => {
 		const a = dispatch(initialBulkAssignmentState, {
 			type: "SET_THINKING_LEVEL",
-			thinkingLevel: "low",
+			thinkingLevel: ThinkingLevel.Low,
 		});
-		expect(a.thinkingLevel).toBe("low");
+		expect(a.thinkingLevel).toBe(ThinkingLevel.Low);
 
 		const b = dispatch(a, {
 			type: "SET_THINKING_LEVEL",
-			thinkingLevel: "xhigh",
+			thinkingLevel: ThinkingLevel.XHigh,
 		});
-		expect(b.thinkingLevel).toBe("xhigh");
+		expect(b.thinkingLevel).toBe(ThinkingLevel.XHigh);
 	});
 });
 
@@ -230,7 +231,7 @@ describe("SET_SELECTOR guard — no-op outside thinking step", () => {
 	const modelState = {
 		selector: "anthropic/claude-sonnet-4-20250514",
 		canSave: true,
-		thinkingLevel: "high",
+		thinkingLevel: ThinkingLevel.High,
 		selectedRoleIds: ["default", "slow"],
 		previewChanges: {
 			changedRoleIds: ["default", "slow"],
@@ -330,7 +331,7 @@ describe("roles step — role toggling", () => {
 			dispatch(rolesState, { type: "TOGGLE_ROLE", roleId: "default" }),
 			{ type: "TOGGLE_ROLE", roleId: "vision" },
 		);
-		expect(withTwo.selectedRoleIds.sort()).toEqual(["default", "vision"]);
+		expect([...withTwo.selectedRoleIds].sort()).toEqual(["default", "vision"]);
 
 		const next = dispatch(withTwo, { type: "TOGGLE_ROLE", roleId: "default" });
 		expect(next.selectedRoleIds).toEqual(["vision"]);
@@ -411,7 +412,7 @@ describe("TOGGLE_ROLE and SET_SELECTED_ROLES guards — no-ops outside roles ste
 	const shared = {
 		selector: "anthropic/claude-sonnet-4-20250514",
 		canSave: true,
-		thinkingLevel: "high",
+		thinkingLevel: ThinkingLevel.High,
 		selectedRoleIds: ["default", "slow"],
 		availableRoleIds: ["default", "smol", "slow", "vision"],
 	} satisfies Partial<BulkAssignmentState>;
@@ -493,7 +494,7 @@ describe("SET_THINKING_LEVEL and SET_AVAILABLE_ROLES guards — no-ops outside t
 		step: "thinking" as const,
 		selector: "anthropic/claude-sonnet-4-20250514",
 		canSave: true,
-		thinkingLevel: "high",
+		thinkingLevel: ThinkingLevel.High,
 		selectedRoleIds: ["default", "slow"],
 		availableRoleIds: ["default", "smol", "slow", "vision"],
 	} satisfies Partial<BulkAssignmentState>;
@@ -502,25 +503,25 @@ describe("SET_THINKING_LEVEL and SET_AVAILABLE_ROLES guards — no-ops outside t
 
 	it("SET_THINKING_LEVEL is a no-op in roles step", () => {
 		const state: BulkAssignmentState = stateWith({ ...modelState, step: "roles" });
-		const next = dispatch(state, { type: "SET_THINKING_LEVEL", thinkingLevel: "low" });
+		const next = dispatch(state, { type: "SET_THINKING_LEVEL", thinkingLevel: ThinkingLevel.Low });
 		expect(next).toStrictEqual(state);
 	});
 
 	it("SET_THINKING_LEVEL is a no-op in preview step", () => {
 		const state: BulkAssignmentState = stateWith({ ...modelState, step: "preview", previewChanges: null });
-		const next = dispatch(state, { type: "SET_THINKING_LEVEL", thinkingLevel: "low" });
+		const next = dispatch(state, { type: "SET_THINKING_LEVEL", thinkingLevel: ThinkingLevel.Low });
 		expect(next).toStrictEqual(state);
 	});
 
 	it("SET_THINKING_LEVEL is a no-op in saving step", () => {
 		const state: BulkAssignmentState = stateWith({ ...modelState, step: "saving", previewChanges: null });
-		const next = dispatch(state, { type: "SET_THINKING_LEVEL", thinkingLevel: "low" });
+		const next = dispatch(state, { type: "SET_THINKING_LEVEL", thinkingLevel: ThinkingLevel.Low });
 		expect(next).toStrictEqual(state);
 	});
 
 	it("SET_THINKING_LEVEL is a no-op in error step", () => {
 		const state: BulkAssignmentState = stateWith({ ...modelState, step: "error", errorMessage: "err", previewChanges: null });
-		const next = dispatch(state, { type: "SET_THINKING_LEVEL", thinkingLevel: "low" });
+		const next = dispatch(state, { type: "SET_THINKING_LEVEL", thinkingLevel: ThinkingLevel.Low });
 		expect(next).toStrictEqual(state);
 	});
 
@@ -562,7 +563,7 @@ describe("preview — transition and selection guard", () => {
 		canSave: true,
 		availableRoleIds: ["default", "smol", "slow", "vision"],
 		selectedRoleIds: ["default", "slow"],
-		thinkingLevel: "high",
+		thinkingLevel: ThinkingLevel.High,
 	});
 
 	it("transitions to preview step with sorted role IDs when roles are selected", () => {
@@ -662,7 +663,7 @@ describe("save cycle — saving, success, and error", () => {
 		step: "preview",
 		selector: "anthropic/claude-sonnet-4-20250514",
 		canSave: true,
-		thinkingLevel: "high",
+		thinkingLevel: ThinkingLevel.High,
 		selectedRoleIds: ["default", "slow"],
 		previewChanges: {
 			changedRoleIds: ["default", "slow"],
@@ -726,7 +727,7 @@ describe("retry from error", () => {
 		step: "error",
 		selector: "anthropic/claude-sonnet-4-20250514",
 		canSave: true,
-		thinkingLevel: "xhigh",
+		thinkingLevel: ThinkingLevel.XHigh,
 		selectedRoleIds: ["default", "slow"],
 		previewChanges: {
 			changedRoleIds: ["default", "slow"],
@@ -744,7 +745,7 @@ describe("retry from error", () => {
 		expect(next.step).toBe("saving");
 		// All data retained for retry
 		expect(next.selector).toBe("anthropic/claude-sonnet-4-20250514");
-		expect(next.thinkingLevel).toBe("xhigh");
+		expect(next.thinkingLevel).toBe(ThinkingLevel.XHigh);
 		expect(next.selectedRoleIds).toEqual(["default", "slow"]);
 		expect(next.previewChanges).not.toBeNull();
 		expect(next.canSave).toBe(true);
@@ -772,7 +773,7 @@ describe("back transitions preserve state for retry", () => {
 			step: "roles",
 			selector: "anthropic/claude-sonnet-4-20250514",
 			canSave: true,
-			thinkingLevel: "medium",
+			thinkingLevel: ThinkingLevel.Medium,
 			availableRoleIds: ["default", "smol", "slow"],
 			selectedRoleIds: ["default"],
 		});
@@ -781,7 +782,7 @@ describe("back transitions preserve state for retry", () => {
 
 		expect(next.step).toBe("thinking");
 		expect(next.selector).toBe("anthropic/claude-sonnet-4-20250514");
-		expect(next.thinkingLevel).toBe("medium");
+		expect(next.thinkingLevel).toBe(ThinkingLevel.Medium);
 	});
 
 	it("BACK from preview returns to roles, preserving selected roles", () => {
@@ -789,7 +790,7 @@ describe("back transitions preserve state for retry", () => {
 			step: "preview",
 			selector: "anthropic/claude-sonnet-4-20250514",
 			canSave: true,
-			thinkingLevel: "high",
+			thinkingLevel: ThinkingLevel.High,
 			selectedRoleIds: ["default", "slow"],
 			previewChanges: {
 				changedRoleIds: ["default", "slow"],
@@ -813,7 +814,7 @@ describe("back transitions preserve state for retry", () => {
 			step: "error",
 			selector: "anthropic/claude-sonnet-4-20250514",
 			canSave: true,
-			thinkingLevel: "high",
+			thinkingLevel: ThinkingLevel.High,
 			selectedRoleIds: ["default", "slow"],
 			previewChanges: {
 				changedRoleIds: ["default", "slow"],

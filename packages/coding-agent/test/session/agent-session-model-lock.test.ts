@@ -21,6 +21,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import type { Model } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionConfig } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -120,7 +121,7 @@ describe("Context promotion", () => {
 		});
 
 		const { promise, resolve } = Promise.withResolvers<void>();
-		const unsub = session.subscribe(e => { if (e.type === "model_changed") { unsub(); resolve(); } });
+		const unsub = session.subscribe(e => { if (e.type === "agent_end") { unsub(); resolve(); } });
 		const timer = setTimeout(resolve, 2000);
 		session.agent.emitExternalEvent({ type: "message_end", message: overflowMsg(spark) });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [overflowMsg(spark)] });
@@ -144,7 +145,7 @@ describe("Context promotion", () => {
 		} satisfies AgentSessionConfig);
 
 		const { promise, resolve } = Promise.withResolvers<void>();
-		const unsub = session.subscribe(e => { if (e.type === "model_changed" || e.type === "session_stop") { unsub(); resolve(); } });
+		const unsub = session.subscribe(e => { if (e.type === "agent_end") { unsub(); resolve(); } });
 		const timer = setTimeout(resolve, 500);
 		session.agent.emitExternalEvent({ type: "message_end", message: overflowMsg(spark) });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [overflowMsg(spark)] });
@@ -176,13 +177,13 @@ describe("Retry-model fallback", () => {
 		dir.removeSync();
 	});
 
-	function makeAgent(initialModel: { provider: string; id: string }, primaryPat: string, fallbackPat: string) {
+	function makeAgent(initialModel: Model, primaryPat: string, fallbackPat: string) {
 		const mock = createMockModel();
 		let attempts = 0;
 		return new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model: initialModel, systemPrompt: ["Test"], tools: [], messages: [] },
-			streamFn: (model) => {
+			streamFn: (model, messages, options) => {
 				attempts++;
 				const key = `${model.provider}/${model.id}`;
 				if (key === primaryPat && attempts <= 1) {
@@ -192,7 +193,7 @@ describe("Retry-model fallback", () => {
 				} else {
 					mock.push({ throw: `Unexpected: ${key}` });
 				}
-				return mock.stream(model);
+				return mock.stream(model, messages, options);
 			},
 		});
 	}

@@ -14,6 +14,7 @@ import { AUTO_THINKING, type ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding
 import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { type Component, setKeybindings, type TUI } from "@oh-my-pi/pi-tui";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
+import { getKnownRoleIds } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 
 type TestSettings = ReturnType<typeof makeSettings>;
 
@@ -881,13 +882,76 @@ describe("bulk assign to roles action", () => {
 		},
 	);
 
+	test(
+		"known custom role custom-fast (without custom: prefix) appears in roles step and is accepted in callback",
+		async () => {
+			installTestTheme();
+			const model = getBundledModel("openai", "gpt-5.5");
+			if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
+			const settings = Settings.isolated({
+				modelRoles: {
+					"custom-fast": `${model.provider}/${model.id}`,
+				},
+			});
+			// Surface custom-fast as a known role via modelTags
+			settings.set("modelTags", { "custom-fast": { name: "custom-fast" } });
+			const onBulkRoleSelect = vi.fn();
+			const onSelect = vi.fn();
+
+			const selector = new ModelSelectorComponent(
+				mockUI(),
+				undefined,
+				settings,
+				mockRegistry([model]),
+				[{ model }],
+				onSelect,
+				() => {},
+				{ onBulkRoleSelect },
+			);
+			installTestTheme();
+
+			// Open menu → "Assign to roles..."
+			selector.handleInput("\n"); // open menu
+			expect(normalizeRenderedText(selector.render(220).join("\n"))).toContain("Assign to roles...");
+			selector.handleInput("\n"); // select "Assign to roles..."
+
+			// Confirm thinking → roles step
+			selector.handleInput("\n");
+
+			// Roles step must list custom-fast
+			const rolesUI = normalizeRenderedText(selector.render(220).join("\n"));
+			expect(rolesUI).toMatch(/(?:custom-fast|custom_fast)/i);
+
+			// Navigate to custom-fast in the role list using its known index
+			const customIndex = getKnownRoleIds(settings).indexOf("custom-fast");
+			expect(customIndex).toBeGreaterThanOrEqual(0);
+			for (let i = 0; i < customIndex; i++) selector.handleInput("\x1b[B");
+			selector.handleInput(" "); // Space toggles custom-fast
+
+			// Advance to preview → must show custom-fast
+			selector.handleInput("\n"); // advance to preview
+			const previewUI = normalizeRenderedText(selector.render(220).join("\n"));
+			expect(previewUI).toMatch(/(?:custom-fast|custom_fast)/i);
+
+			// Confirm → callback fires with exactly roleIds: ["custom-fast"]
+			selector.handleInput("\n");
+
+			expect(onBulkRoleSelect).toHaveBeenCalledTimes(1);
+			expect(onBulkRoleSelect).toHaveBeenCalledWith(
+				expect.objectContaining({
+					roleIds: ["custom-fast"],
+				}),
+			);
+		},
+	);
+
 	describe("controller callback injection via showModelSelector", () => {
 		let settingsState: SettingsTestState | undefined;
 
 		beforeEach(async () => {
 			settingsState = beginSettingsTest();
 			await Settings.init({ inMemory: true });
-			setKeybindings(KeybindingsManager.inMemory({ "tui.select.down": "\x0e" }));
+			setKeybindings(KeybindingsManager.inMemory({ "tui.select.down": "ctrl+n" }));
 			installTestTheme();
 		});
 

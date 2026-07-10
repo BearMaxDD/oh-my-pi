@@ -157,7 +157,7 @@ describe("Settings.setModelRolesAtomic", () => {
 		const realRename = fs.promises.rename.bind(fs.promises);
 		const renameSpy = vi
 			.spyOn(fs.promises, "rename")
-			.mockImplementationOnce((from: string, to: string) => realRename(from, to))
+			.mockImplementationOnce((from: fs.PathLike, to: fs.PathLike) => realRename(from, to))
 			.mockRejectedValueOnce(new Error("disk full"));
 		const p1 = settings.setModelRolesAtomic({ roleA: "new/A" });
 		const p2 = settings.setModelRolesAtomic({ roleB: "new/B" });

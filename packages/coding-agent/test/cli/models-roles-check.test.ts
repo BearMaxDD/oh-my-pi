@@ -11,7 +11,7 @@
  * 7. ModelsCommand declares --check flag.
  */
 
-import { describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it, spyOn, type Mock } from "bun:test";
 import { runModelsCommand, resolveModelsArgs } from "../../src/cli/models-cli";
 import { Settings } from "../../src/config/settings";
 import { getKnownRoleIds, getRoleInfo } from "../../src/config/model-roles";
@@ -65,7 +65,7 @@ function allValidFixture(): { settings: Settings; registry: ModelRegistry } {
 /** Test-local harness: captures stdout + stderr + process.exitCode + thrown errors. */
 async function runModelsCommandForTest(args: {
 	action: string;
-	flags: Record<string, boolean>;
+	flags: Record<string, boolean | string[]>;
 	pattern?: string;
 	settings?: Settings;
 	registry: ModelRegistry;
@@ -479,7 +479,7 @@ describe("roles --check with extension-provided models", () => {
 
 	it("exits 2 on registry runtime operation failure (no throw, stderr diagnostic)", async () => {
 		const tmp = await TempDir.create("@roles-reg-");
-	let syncSpy: { mockRestore(): void } | undefined;
+	let syncSpy: Mock<(activeSourceIds: string[]) => void> | undefined;
 		try {
 			const extPath = await createExtensionFile(tmp);
 			const dbPath = tmp.join("auth.db");
