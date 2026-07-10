@@ -10,6 +10,7 @@ import { recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../capability/rule";
+import { type ModelRoutingEvidenceV2, writeModelRoutingEvidenceV2 } from "../codex-plan-run/model-routing-evidence";
 import type { StrictRoleExecutionPlan } from "../codex-plan-run/role-bound-stage-scheduler";
 import { ModelRegistry } from "../config/model-registry";
 import {
@@ -43,6 +44,7 @@ import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
+import type { ConfiguredThinkingLevel } from "../thinking";
 import type { ContextFileEntry, ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { isIrcEnabled } from "../tools/irc";
@@ -57,6 +59,7 @@ import { ToolAbortError } from "../tools/tool-errors";
 import type { EventBus } from "../utils/event-bus";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
+import { computeStrictRoleModelBindingHash } from "./strict-role-model-binding";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import {
 	type AgentDefinition,
@@ -409,6 +412,178 @@ export interface ExecutorOptions {
 	 * gate consumes this in the strict path; legacy task executions omit it.
 	 */
 	strictRoleExecutionPlan?: StrictRoleExecutionPlan;
+}
+
+type StrictRoleExecutionErrorCode =
+	| "role_model_mismatch"
+	| "routing_evidence_write_failed"
+	| "actual_evidence_write_failed";
+
+class StrictRoleExecutionError extends Error {
+	constructor(
+		public readonly code: StrictRoleExecutionErrorCode,
+		message: string,
+	) {
+		super(message);
+		this.name = "StrictRoleExecutionError";
+	}
+}
+
+interface StrictRoleExecutionGate {
+	modelRegistry: ModelRegistry;
+	authStorage: AuthStorage;
+	model: Model;
+	resolvedThinkingLevel: ConfiguredThinkingLevel | undefined;
+	explicitThinkingLevel: boolean;
+	acceptingDir: string;
+	startedEvidence: ModelRoutingEvidenceV2;
+}
+
+function strictModelMismatch(message: string): StrictRoleExecutionError {
+	return new StrictRoleExecutionError("role_model_mismatch", message);
+}
+
+function buildStrictStartedEvidence(plan: StrictRoleExecutionPlan): ModelRoutingEvidenceV2 {
+	const { binding, contract, decision, evidence } = plan;
+	const preflight = evidence.preflight;
+	if (!evidence.acceptingDir?.trim() || !preflight || preflight.status !== "preflight_passed") {
+		throw new StrictRoleExecutionError(
+			"routing_evidence_write_failed",
+			"Strict execution requires the immutable preflight evidence identity",
+		);
+	}
+	if (
+		preflight.model_binding.provider !== binding.provider ||
+		preflight.model_binding.model_id !== binding.modelId ||
+		preflight.model_binding.binding_hash !== binding.bindingHash ||
+		preflight.model_role !== binding.roleId ||
+		preflight.role_decision.selected_role_id !== decision.selectedRoleId ||
+		preflight.contract_validation.contract_version !== String(contract.contractVersion ?? "unknown")
+	) {
+		throw strictModelMismatch("Strict preflight evidence does not match the role/model binding");
+	}
+	const now = new Date().toISOString();
+	return {
+		...preflight,
+		status: "started",
+		timestamps: {
+			...preflight.timestamps,
+			updated_at: now,
+			started_at: now,
+		},
+		actual: {
+			exact_match: true,
+			fallback_used: false,
+			parent_model_used: false,
+			context_promotion_used: false,
+			provider: binding.provider,
+			model_id: binding.modelId,
+			thinking_level: String(binding.thinkingLevel ?? "model_default"),
+			session_created: false,
+			first_dispatch: false,
+		},
+	};
+}
+
+async function prepareStrictRoleExecution(options: ExecutorOptions): Promise<StrictRoleExecutionGate> {
+	const plan = options.strictRoleExecutionPlan;
+	if (!plan) throw strictModelMismatch("Missing strict role execution plan");
+	const { binding, contract, decision } = plan;
+	if (
+		!contract.passed ||
+		decision.selectedRoleId !== contract.roleId ||
+		contract.roleId !== binding.roleId ||
+		binding.model.provider !== binding.provider ||
+		binding.model.id !== binding.modelId ||
+		binding.modelRef !== `${binding.provider}/${binding.modelId}` ||
+		binding.canonicalSelector !== `${binding.provider}/${binding.modelId}` ||
+		(contract.contractVersion !== undefined && binding.contractVersion !== contract.contractVersion) ||
+		binding.bindingHash !==
+			computeStrictRoleModelBindingHash({
+				roleId: binding.roleId,
+				configuredSelector: binding.configuredSelector,
+				provider: binding.provider,
+				modelId: binding.modelId,
+				thinkingLevel: binding.thinkingLevel,
+				contractVersion: binding.contractVersion,
+			})
+	) {
+		throw strictModelMismatch("Strict role/model binding failed runtime revalidation");
+	}
+
+	const registryFromParent = options.modelRegistry !== undefined;
+	const modelRegistry =
+		options.modelRegistry ?? new ModelRegistry(options.authStorage ?? (await discoverAuthStorage()));
+	const authStorage = modelRegistry.authStorage;
+	if (options.authStorage && options.authStorage !== authStorage) {
+		throw new Error(
+			"options.authStorage and options.modelRegistry.authStorage must be the same instance when both are provided",
+		);
+	}
+	if (!registryFromParent) await modelRegistry.refresh();
+	const availableModel = modelRegistry
+		.getAvailable()
+		.find(model => model.provider === binding.provider && model.id === binding.modelId);
+	if (availableModel !== binding.model) {
+		throw strictModelMismatch("Strict role/model binding is no longer the exact available model instance");
+	}
+
+	let startedEvidence: ModelRoutingEvidenceV2;
+	try {
+		startedEvidence = buildStrictStartedEvidence(plan);
+		await writeModelRoutingEvidenceV2(startedEvidence, plan.evidence.acceptingDir!);
+	} catch (error) {
+		if (error instanceof StrictRoleExecutionError) throw error;
+		const message = error instanceof Error ? error.message : String(error);
+		throw new StrictRoleExecutionError(
+			"routing_evidence_write_failed",
+			`Unable to persist strict routing evidence: ${message}`,
+		);
+	}
+
+	return {
+		modelRegistry,
+		authStorage,
+		model: binding.model,
+		resolvedThinkingLevel: binding.thinkingLevel as ConfiguredThinkingLevel | undefined,
+		explicitThinkingLevel: binding.thinkingSource === "explicit",
+		acceptingDir: plan.evidence.acceptingDir!,
+		startedEvidence,
+	};
+}
+
+async function persistStrictCompletionEvidence(
+	gate: StrictRoleExecutionGate,
+	done: { exitCode: number; aborted?: boolean; sessionCreated: boolean },
+	firstChatDispatchAt: number | undefined,
+): Promise<void> {
+	const now = new Date().toISOString();
+	const completed = done.exitCode === 0 && !done.aborted;
+	try {
+		await writeModelRoutingEvidenceV2(
+			{
+				...gate.startedEvidence,
+				status: completed ? "completed" : "acceptance_failed",
+				timestamps: {
+					...gate.startedEvidence.timestamps,
+					updated_at: now,
+					...(completed ? { completed_at: now } : {}),
+				},
+				actual: {
+					...gate.startedEvidence.actual,
+					session_created: done.sessionCreated,
+					first_dispatch: done.sessionCreated && firstChatDispatchAt !== undefined,
+				},
+			},
+			gate.acceptingDir,
+		);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new StrictRoleExecutionError(
+			"actual_evidence_write_failed",
+			`Unable to persist strict completion evidence: ${message}`,
+		);
+	}
 }
 
 function parseStringifiedJson(value: unknown): unknown {
@@ -1981,6 +2156,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		agent.readSummarize === false ? { "read.summarize.enabled": false } : undefined,
 		options.parentServiceTier,
 	);
+	const strictRoleExecutionGate = options.strictRoleExecutionPlan
+		? await prepareStrictRoleExecution(options)
+		: undefined;
 	const maxRecursionDepth = settings.get("task.maxRecursionDepth") ?? 2;
 	// Tailored specialist identity for this spawn. `subagentRole` is the full
 	// (trimmed) role text fed to the system-prompt preamble; `subagentDisplayName`
@@ -2067,6 +2245,13 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		requestedModel,
 	});
 	const progress = monitor.progress;
+	if (strictRoleExecutionGate) {
+		const { binding, contract } = options.strictRoleExecutionPlan!;
+		progress.validatedRoleId = contract.roleId;
+		progress.configuredSelector = binding.configuredSelector;
+		progress.bindingHash = binding.bindingHash;
+		progress.exactMatch = true;
+	}
 	let unsubscribe: (() => void) | null = null;
 	let reviveSession: (() => Promise<AgentSession>) | null = null;
 	// Adopted (kept-alive) subagents flip registry status from session events on
@@ -2089,6 +2274,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		aborted?: boolean;
 		abortReason?: string;
 		durationMs: number;
+		sessionCreated: boolean;
 	}> => {
 		const sessionAbortController = new AbortController();
 		const abortSignal = monitor.abortSignal;
@@ -2126,61 +2312,76 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		let sessionOpenedAt: number | undefined;
 		let sessionCreatedAt: number | undefined;
 		let readyAt: number | undefined;
+		let sessionCreated = false;
 
 		try {
 			checkAbort();
-			// Pin authStorage to modelRegistry.authStorage — mirrors the createAgentSession invariant.
-			const registryFromParent = options.modelRegistry !== undefined;
-			const modelRegistry =
-				options.modelRegistry ??
-				new ModelRegistry(options.authStorage ?? (await awaitAbortable(discoverAuthStorage())));
-			const authStorage = modelRegistry.authStorage;
-			if (options.authStorage && options.authStorage !== authStorage) {
-				throw new Error(
-					"options.authStorage and options.modelRegistry.authStorage must be the same instance when both are provided",
-				);
-			}
-			checkAbort();
-			if (!registryFromParent) {
-				await awaitAbortable(modelRegistry.refresh());
+			// Strict role stages consume the preflighted binding verbatim. They never
+			// enter the auth/parent/retry resolution chain used by legacy spawns.
+			let modelRegistry: ModelRegistry;
+			let authStorage: AuthStorage;
+			let model: Model | undefined;
+			let resolvedThinkingLevel: ConfiguredThinkingLevel | undefined;
+			let explicitThinkingLevel = false;
+			let authFallbackUsed = false;
+			if (strictRoleExecutionGate) {
+				modelRegistry = strictRoleExecutionGate.modelRegistry;
+				authStorage = strictRoleExecutionGate.authStorage;
+				model = strictRoleExecutionGate.model;
+				resolvedThinkingLevel = strictRoleExecutionGate.resolvedThinkingLevel;
+				explicitThinkingLevel = strictRoleExecutionGate.explicitThinkingLevel;
 			} else {
-				logger.debug("runSubagent: reusing parent modelRegistry; skipping refresh");
-			}
-			checkAbort();
-
-			const {
-				model,
-				thinkingLevel: resolvedThinkingLevel,
-				explicitThinkingLevel,
-				authFallbackUsed,
-			} = await awaitAbortable(
-				resolveModelOverrideWithAuthFallback(
-					modelPatterns,
-					options.parentActiveModelPattern,
-					modelRegistry,
-					settings,
-				),
-			);
-			if (authFallbackUsed && model) {
-				logger.warn("Subagent model has no working credentials; falling back to parent session model", {
-					requested: modelPatterns,
-					parentModel: options.parentActiveModelPattern,
-					resolvedProvider: model.provider,
-					resolvedModel: model.id,
+				// Pin authStorage to modelRegistry.authStorage — mirrors the createAgentSession invariant.
+				const registryFromParent = options.modelRegistry !== undefined;
+				modelRegistry =
+					options.modelRegistry ??
+					new ModelRegistry(options.authStorage ?? (await awaitAbortable(discoverAuthStorage())));
+				authStorage = modelRegistry.authStorage;
+				if (options.authStorage && options.authStorage !== authStorage) {
+					throw new Error(
+						"options.authStorage and options.modelRegistry.authStorage must be the same instance when both are provided",
+					);
+				}
+				checkAbort();
+				if (!registryFromParent) {
+					await awaitAbortable(modelRegistry.refresh());
+				} else {
+					logger.debug("runSubagent: reusing parent modelRegistry; skipping refresh");
+				}
+				checkAbort();
+				const resolved = await awaitAbortable(
+					resolveModelOverrideWithAuthFallback(
+						modelPatterns,
+						options.parentActiveModelPattern,
+						modelRegistry,
+						settings,
+					),
+				);
+				model = resolved.model;
+				resolvedThinkingLevel = resolved.thinkingLevel;
+				explicitThinkingLevel = resolved.explicitThinkingLevel;
+				authFallbackUsed = resolved.authFallbackUsed;
+				if (authFallbackUsed && model) {
+					logger.warn("Subagent model has no working credentials; falling back to parent session model", {
+						requested: modelPatterns,
+						parentModel: options.parentActiveModelPattern,
+						resolvedProvider: model.provider,
+						resolvedModel: model.id,
+					});
+				}
+				const retryFallbackRole = installSubagentRetryFallbackChain({
+					settings: subagentSettings,
+					id,
+					candidates: resolveSubagentRetryFallbackCandidates(modelPatterns, modelRegistry, settings),
+					model,
+					authFallbackUsed,
 				});
-			}
-			const retryFallbackRole = installSubagentRetryFallbackChain({
-				settings: subagentSettings,
-				id,
-				candidates: resolveSubagentRetryFallbackCandidates(modelPatterns, modelRegistry, settings),
-				model,
-				authFallbackUsed,
-			});
-			if (retryFallbackRole) {
-				logger.debug("Configured subagent runtime model fallback chain", {
-					role: retryFallbackRole,
-					requested: modelPatterns,
-				});
+				if (retryFallbackRole) {
+					logger.debug("Configured subagent runtime model fallback chain", {
+						role: retryFallbackRole,
+						requested: modelPatterns,
+					});
+				}
 			}
 			if (model?.contextWindow && model.contextWindow > 0) {
 				progress.contextWindow = model.contextWindow;
@@ -2190,7 +2391,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					? formatModelSelectorValue(formatModelStringWithRouting(model), resolvedThinkingLevel)
 					: formatModelStringWithRouting(model);
 			}
-			const effectiveThinkingLevel = thinkingLevel ?? resolvedThinkingLevel;
+			const effectiveThinkingLevel = strictRoleExecutionGate
+				? resolvedThinkingLevel
+				: (thinkingLevel ?? resolvedThinkingLevel);
 			resolvedAt = performance.now();
 
 			const effectiveCwd = worktree ?? cwd;
@@ -2319,6 +2522,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				throw err;
 			}
 			sessionCreatedAt = performance.now();
+			sessionCreated = true;
 
 			monitor.setActiveSession(session);
 			installRegistryStatusSync(session);
@@ -2556,10 +2760,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			aborted,
 			abortReason: aborted ? abortReasonText : undefined,
 			durationMs: Date.now() - startTime,
+			sessionCreated,
 		};
 	};
 
 	const done = await runSubagent();
+	if (strictRoleExecutionGate) {
+		await persistStrictCompletionEvidence(strictRoleExecutionGate, done, firstChatDispatchAt);
+	}
 	monitor.finish();
 
 	return finalizeRunResult({

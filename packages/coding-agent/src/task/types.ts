@@ -283,7 +283,6 @@ export interface TaskParams {
 	tasks?: TaskItem[];
 }
 
-
 /**
  * One-line, length-capped label safe for a single roster line, a registry
  * display, or a prompt field. Collapses whitespace and clips at `max` chars
@@ -423,6 +422,14 @@ export interface AgentProgress {
 	resolvedModel?: string;
 	/** Model role key used for routing this spawn (e.g. "superpowers:tdd-writer"). */
 	modelRole?: string;
+	/** Validated role id for a strict role-bound execution; absent for legacy spawns. */
+	validatedRoleId?: string;
+	/** Exact selector frozen during strict stage preflight; absent for legacy spawns. */
+	configuredSelector?: string;
+	/** Immutable strict binding fingerprint; absent for legacy spawns. */
+	bindingHash?: string;
+	/** True only after strict runtime revalidation confirms the exact bound model instance. */
+	exactMatch?: boolean;
 	/** The explicit model pattern requested before routing/fallback resolution. */
 	requestedModel?: string;
 	/** Whether the model fell back to the parent's active model due to auth failure. */

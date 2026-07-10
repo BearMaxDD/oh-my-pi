@@ -48,6 +48,9 @@ export interface StrictRoleExecutionPlan {
 	readonly evidence: {
 		readonly path: string;
 		readonly status: "preflight_passed";
+		/** Immutable preflight identity required for strict runtime V2 transitions. */
+		readonly acceptingDir?: string;
+		readonly preflight?: Readonly<ModelRoutingEvidenceV2>;
 	};
 }
 
@@ -346,10 +349,8 @@ export async function buildStrictStageExecutionPlan(input: StagePreflightInput):
 		throw error;
 	}
 
-	const evidencePath = await writeModelRoutingEvidenceV2(
-		toPreflightEvidence(input, decision, contract, binding),
-		input.acceptingDir,
-	);
+	const preflightEvidence = toPreflightEvidence(input, decision, contract, binding);
+	const evidencePath = await writeModelRoutingEvidenceV2(preflightEvidence, input.acceptingDir);
 	return Object.freeze({
 		decision,
 		contract: Object.freeze({
@@ -359,7 +360,12 @@ export async function buildStrictStageExecutionPlan(input: StagePreflightInput):
 			checks: Object.freeze(contract.checks.map(check => Object.freeze({ ...check }))),
 		}),
 		binding: Object.freeze(binding),
-		evidence: Object.freeze({ path: evidencePath, status: "preflight_passed" as const }),
+		evidence: Object.freeze({
+			path: evidencePath,
+			status: "preflight_passed" as const,
+			acceptingDir: input.acceptingDir,
+			preflight: Object.freeze(preflightEvidence),
+		}),
 	});
 }
 

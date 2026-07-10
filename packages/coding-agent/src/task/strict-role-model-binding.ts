@@ -51,12 +51,12 @@ export interface StrictRoleModelBinding {
 	bindingHash: string;
 }
 
-function bindingHash(input: {
+export function computeStrictRoleModelBindingHash(input: {
 	roleId: string;
 	configuredSelector: string;
 	provider: string;
 	modelId: string;
-	thinkingLevel: Effort | ThinkingLevel.Off | undefined;
+	thinkingLevel: StrictRoleModelBinding["thinkingLevel"];
 	contractVersion: string | number;
 }): string {
 	return createHash("sha256")
@@ -96,11 +96,7 @@ export function resolveStrictRoleModelBinding(options: ResolveStrictRoleModelBin
 
 	const parsed = parseExactModelSelector(configuredSelector);
 	if (!parsed) {
-		throw strictError(
-			"role_model_not_concrete",
-			roleId,
-			`Role ${roleId} must use an exact provider/model selector`,
-		);
+		throw strictError("role_model_not_concrete", roleId, `Role ${roleId} must use an exact provider/model selector`);
 	}
 
 	const model = findExactAvailableModel(availableModels, parsed.provider, parsed.id);
@@ -149,7 +145,7 @@ export function resolveStrictRoleModelBinding(options: ResolveStrictRoleModelBin
 		thinkingLevel,
 		canonicalSelector,
 		createdAt: new Date().toISOString(),
-		bindingHash: bindingHash({
+		bindingHash: computeStrictRoleModelBindingHash({
 			roleId,
 			configuredSelector,
 			provider: parsed.provider,
