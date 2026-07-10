@@ -195,6 +195,47 @@ export function parseModelString(
 }
 
 /**
+ * Parse a concrete provider/model selector without applying aliases, glob
+ * matching, provider routing, or model-id fallbacks.
+ *
+ * This is deliberately narrower than {@link parseModelString}: callers that
+ * need a pinned model (rather than legacy model selection) must reject the
+ * selector grammar that can resolve to a different model.
+ */
+export function parseExactModelSelector(
+	selector: string,
+): { provider: string; id: string; thinkingLevel?: ConfiguredThinkingLevel } | undefined {
+	const normalized = selector.trim();
+	if (!normalized) return undefined;
+
+	const parsed = parseModelString(normalized);
+	if (
+		!parsed ||
+		!parsed.provider ||
+		!parsed.id ||
+		parsed.provider === "pi" ||
+		/[\s*?\[\]{},]/.test(parsed.provider) ||
+		/[\s*?\[\]{},]/.test(parsed.id)
+	) {
+		return undefined;
+	}
+
+	return parsed;
+}
+
+/**
+ * Find an available model by its exact provider and identifier. This helper
+ * intentionally bypasses legacy alias, OpenRouter, Bedrock, and fuzzy lookup.
+ */
+export function findExactAvailableModel<TApi extends Api>(
+	availableModels: readonly Model<TApi>[],
+	provider: string,
+	id: string,
+): Model<TApi> | undefined {
+	return availableModels.find(model => model.provider === provider && model.id === id);
+}
+
+/**
  * Format a model as "provider/modelId" string.
  */
 export function formatModelString(model: Model<Api>): string {
