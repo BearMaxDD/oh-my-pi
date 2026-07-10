@@ -24,7 +24,12 @@ export interface ModelRoutingEvidence {
 	thinking_level?: string;
 }
 
-export type ModelRoutingEvidenceV2Status = "preflight_passed" | "started" | "blocked" | "completed" | "acceptance_failed";
+export type ModelRoutingEvidenceV2Status =
+	| "preflight_passed"
+	| "started"
+	| "blocked"
+	| "completed"
+	| "acceptance_failed";
 
 export interface ModelRoutingEvidenceTimestamps {
 	created_at?: string;
@@ -38,7 +43,6 @@ export interface ModelRoutingEvidenceRoleCandidate {
 	confidence?: number;
 	reason?: string;
 }
-
 
 export interface ModelRoutingEvidenceAdvisor {
 	model?: string;
@@ -154,6 +158,10 @@ export async function writeModelRoutingEvidence(evidence: ModelRoutingEvidence, 
 	const dir = join(acceptingDir, "tasks", evidence.task_id);
 	await mkdir(dir, { recursive: true });
 	const filePath = join(dir, "model-routing-evidence.json");
+	const existing = await readExistingModelRoutingEvidenceV2(filePath);
+	if (existing && isPersistedModelRoutingEvidenceV2(existing)) {
+		throw new Error("Cannot overwrite V2 routing evidence with a V1 artifact");
+	}
 	await writeFile(filePath, `${JSON.stringify(evidence, null, 2)}\n`);
 	return filePath;
 }
@@ -163,8 +171,13 @@ export async function writeModelRoutingEvidence(evidence: ModelRoutingEvidence, 
  * rename. Existing evidence must retain the same identity and make a legal
  * state transition before it can be replaced.
  */
-export async function writeModelRoutingEvidenceV2(evidence: ModelRoutingEvidenceV2, acceptingDir: string): Promise<string> {
-	const dir = evidence.stage_id ? join(acceptingDir, "tasks", evidence.task_id, "stages", evidence.stage_id) : join(acceptingDir, "tasks", evidence.task_id);
+export async function writeModelRoutingEvidenceV2(
+	evidence: ModelRoutingEvidenceV2,
+	acceptingDir: string,
+): Promise<string> {
+	const dir = evidence.stage_id
+		? join(acceptingDir, "tasks", evidence.task_id, "stages", evidence.stage_id)
+		: join(acceptingDir, "tasks", evidence.task_id);
 	const filePath = join(dir, "model-routing-evidence.json");
 
 	await mkdir(dir, { recursive: true });
@@ -185,7 +198,9 @@ export async function writeModelRoutingEvidenceV2(evidence: ModelRoutingEvidence
 	return filePath;
 }
 
-async function readExistingModelRoutingEvidenceV2(filePath: string): Promise<ModelRoutingEvidence | ModelRoutingEvidenceV2 | undefined> {
+async function readExistingModelRoutingEvidenceV2(
+	filePath: string,
+): Promise<ModelRoutingEvidence | ModelRoutingEvidenceV2 | undefined> {
 	try {
 		return JSON.parse(await readFile(filePath, "utf8")) as ModelRoutingEvidence | ModelRoutingEvidenceV2;
 	} catch (error) {
@@ -200,7 +215,9 @@ function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
 	return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
-function isPersistedModelRoutingEvidenceV2(evidence: ModelRoutingEvidence | ModelRoutingEvidenceV2): evidence is ModelRoutingEvidenceV2 {
+function isPersistedModelRoutingEvidenceV2(
+	evidence: ModelRoutingEvidence | ModelRoutingEvidenceV2,
+): evidence is ModelRoutingEvidenceV2 {
 	return evidence.schema_version === 2 && "status" in evidence;
 }
 
@@ -213,28 +230,38 @@ function assertMatchingEvidenceIdentity(existing: ModelRoutingEvidenceV2, incomi
 	if (existing.stage_id !== incoming.stage_id) {
 		throw new Error("Cannot overwrite routing evidence with a different stage_id");
 	}
+	const existingBindingHash = existing.model_binding.binding_hash;
+	const incomingBindingHash = incoming.model_binding.binding_hash;
+	if (existingBindingHash !== incomingBindingHash) {
+		throw new Error("Cannot overwrite routing evidence with a different binding_hash");
+	}
 }
 
 function assertValidEvidenceTransition(from: ModelRoutingEvidenceV2Status, to: ModelRoutingEvidenceV2Status): void {
-	const permittedTransitions: Readonly<Record<ModelRoutingEvidenceV2Status, readonly ModelRoutingEvidenceV2Status[]>> = {
-		preflight_passed: ["started", "blocked"],
-		started: ["completed", "acceptance_failed"],
-		blocked: [],
-		completed: [],
-		acceptance_failed: [],
-	};
+	const permittedTransitions: Readonly<Record<ModelRoutingEvidenceV2Status, readonly ModelRoutingEvidenceV2Status[]>> =
+		{
+			preflight_passed: ["started", "blocked"],
+			started: ["completed", "acceptance_failed"],
+			blocked: [],
+			completed: [],
+			acceptance_failed: [],
+		};
 
 	if (!permittedTransitions[from].includes(to)) {
 		throw new Error(`Invalid routing evidence state transition: ${from} → ${to}`);
 	}
 }
 
-
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function validateRequiredStrings(errors: string[], label: string, value: unknown, fields: readonly string[]): Record<string, unknown> {
+function validateRequiredStrings(
+	errors: string[],
+	label: string,
+	value: unknown,
+	fields: readonly string[],
+): Record<string, unknown> {
 	const record = isRecord(value) ? value : {};
 	for (const field of fields) {
 		if (typeof record[field] !== "string" || record[field].length === 0) {
@@ -244,7 +271,12 @@ function validateRequiredStrings(errors: string[], label: string, value: unknown
 	return record;
 }
 
-function validateRequiredBooleans(errors: string[], label: string, value: Record<string, unknown>, fields: readonly string[]): void {
+function validateRequiredBooleans(
+	errors: string[],
+	label: string,
+	value: Record<string, unknown>,
+	fields: readonly string[],
+): void {
 	for (const field of fields) {
 		if (typeof value[field] !== "boolean") {
 			errors.push(`${label}.${field} is required`);
@@ -263,7 +295,11 @@ function validateV2EvidenceForAcceptance(errors: string[], evidence: Partial<Mod
 
 	validateRequiredStrings(errors, "timestamps", evidence.timestamps, ["created_at", "updated_at"]);
 
-	const roleDecision = validateRequiredStrings(errors, "role_decision", evidence.role_decision, ["decision_id", "source", "selected_role_id"]);
+	const roleDecision = validateRequiredStrings(errors, "role_decision", evidence.role_decision, [
+		"decision_id",
+		"source",
+		"selected_role_id",
+	]);
 	if (typeof roleDecision.confidence !== "number") {
 		errors.push("role_decision.confidence is required");
 	}
@@ -277,14 +313,16 @@ function validateV2EvidenceForAcceptance(errors: string[], evidence: Partial<Mod
 			}
 		}
 	}
-	if (!Array.isArray(roleDecision.reasons) || !roleDecision.reasons.every((reason) => typeof reason === "string")) {
+	if (!Array.isArray(roleDecision.reasons) || !roleDecision.reasons.every(reason => typeof reason === "string")) {
 		errors.push("role_decision.reasons is required");
 	}
 	if (roleDecision.advisor !== undefined) {
 		validateRequiredStrings(errors, "role_decision.advisor", roleDecision.advisor, ["model", "result"]);
 	}
 
-	const contractValidation = validateRequiredStrings(errors, "contract_validation", evidence.contract_validation, ["contract_version"]);
+	const contractValidation = validateRequiredStrings(errors, "contract_validation", evidence.contract_validation, [
+		"contract_version",
+	]);
 	if (contractValidation.passed !== true) {
 		errors.push("contract_validation.passed must be true");
 	}
@@ -299,7 +337,6 @@ function validateV2EvidenceForAcceptance(errors: string[], evidence: Partial<Mod
 		}
 	}
 
-
 	const modelBinding = validateRequiredStrings(errors, "model_binding", evidence.model_binding, [
 		"configured_selector",
 		"provider",
@@ -312,7 +349,11 @@ function validateV2EvidenceForAcceptance(errors: string[], evidence: Partial<Mod
 		return;
 	}
 
-	const actual = validateRequiredStrings(errors, "actual", evidence.actual, ["provider", "model_id", "thinking_level"]);
+	const actual = validateRequiredStrings(errors, "actual", evidence.actual, [
+		"provider",
+		"model_id",
+		"thinking_level",
+	]);
 	validateRequiredBooleans(errors, "actual", actual, [
 		"exact_match",
 		"fallback_used",
@@ -336,7 +377,11 @@ function validateV2EvidenceForAcceptance(errors: string[], evidence: Partial<Mod
 		errors.push(`Stage ${stageLabel} actual session_created must be true`);
 	}
 	for (const field of ["provider", "model_id", "thinking_level"] as const) {
-		if (typeof modelBinding[field] === "string" && typeof actual[field] === "string" && modelBinding[field] !== actual[field]) {
+		if (
+			typeof modelBinding[field] === "string" &&
+			typeof actual[field] === "string" &&
+			modelBinding[field] !== actual[field]
+		) {
 			errors.push(`model_binding.${field} must match actual.${field}`);
 		}
 	}
@@ -351,7 +396,9 @@ function validateV2EvidenceForAcceptance(errors: string[], evidence: Partial<Mod
  *
  * @returns A string array of validation errors (empty = valid).
  */
-export function validateModelRoutingEvidenceForAcceptance(evidence: ModelRoutingEvidence | ModelRoutingEvidenceV2): string[] {
+export function validateModelRoutingEvidenceForAcceptance(
+	evidence: ModelRoutingEvidence | ModelRoutingEvidenceV2,
+): string[] {
 	const errors: string[] = [];
 	if (evidence.model_role != null && !evidence.resolved_model) {
 		errors.push(`Role-bound task ${evidence.task_id} resolved_model is required`);

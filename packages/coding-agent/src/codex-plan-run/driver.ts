@@ -35,9 +35,9 @@ import {
 } from "./real-runtime-simulation";
 import type { CreatePlanRunRepairDecisionInput, PlanRunRepairDecision } from "./repair-loop";
 import {
-	buildRoleBoundStageRunInputs,
-	type RoleBoundStageRunInput,
+	buildUnplannedRoleBoundStageRunInputs,
 	type StageOutputRef,
+	type UnplannedRoleBoundStageRunInput,
 } from "./role-bound-stage-scheduler";
 import {
 	buildBusinessSimulationScenarios,
@@ -61,7 +61,11 @@ import type { SubagentTaskOutput, TaskCommandEvidence, TaskReviewRequest, TaskRe
 import type { TddEvidenceMatrix } from "./tdd-evidence";
 import type { PlanRunState } from "./types";
 
-export type { RoleBoundStageRunInput, StageOutputRef } from "./role-bound-stage-scheduler";
+export type {
+	RoleBoundStageRunInput,
+	StageOutputRef,
+	UnplannedRoleBoundStageRunInput,
+} from "./role-bound-stage-scheduler";
 export { buildRoleBoundStageRunInputs } from "./role-bound-stage-scheduler";
 
 import { projectFrameworkStagesToRoleBoundTodoSnapshot } from "./role-bound-todo-snapshot";
@@ -100,7 +104,7 @@ export interface PlanRunDriverDeps {
 	spawnTask(input: { book: PlanExecutionBook; acceptingDir: string; taskId: string }): Promise<SpawnTaskOutput>;
 	reviewTask(request: TaskReviewRequest): Promise<TaskReviewResult>;
 	runMainAcceptance(input: MainThreadAcceptanceReviewRequest): Promise<MainThreadAcceptanceReviewResult>;
-	spawnStage?(input: RoleBoundStageRunInput): Promise<RoleBoundStageRunOutput>;
+	spawnStage?(input: UnplannedRoleBoundStageRunInput): Promise<RoleBoundStageRunOutput>;
 	createRepairDecision(input: CreatePlanRunRepairDecisionInput): PlanRunRepairDecision;
 }
 
@@ -374,7 +378,10 @@ export async function runPlanRunDriver(
 			if (!deps.spawnStage) {
 				throw new Error("Role-bound execution requires PlanRunDriverDeps.spawnStage");
 			}
-			const stageInputs = buildRoleBoundStageRunInputs({
+			// Task12 replaces this explicit legacy bridge with awaited strict preflight
+			// plus the role-bound runner. Until then, do not call the strict builder
+			// without its required settings/model-registry dependencies.
+			const stageInputs = buildUnplannedRoleBoundStageRunInputs({
 				book: executionBook,
 				acceptingDir,
 				taskId,

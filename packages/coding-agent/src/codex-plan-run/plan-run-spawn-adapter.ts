@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { RoleBoundStageRunOutput, SpawnTaskOutput } from "./driver";
 import type { PlanExecutionBook } from "./execution-book";
-import type { RoleBoundStageRunInput, StageOutputRef } from "./role-bound-stage-scheduler";
+import type { StageOutputRef, UnplannedRoleBoundStageRunInput } from "./role-bound-stage-scheduler";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -100,7 +100,7 @@ function buildAssignment(
 // ---------------------------------------------------------------------------
 
 /**
- * Build PlanRunTaskSpawnParams from a RoleBoundStageRunInput.
+ * Build PlanRunTaskSpawnParams from an unplanned legacy stage input.
  *
  * Extracts:
  * - agent — always "task"
@@ -113,7 +113,7 @@ function buildAssignment(
  * - description — human-readable stage label
  * - required_skill_evidence — populated from prompt pack required_outputs
  */
-export function buildPlanRunStageSpawnParams(input: RoleBoundStageRunInput): PlanRunTaskSpawnParams {
+export function buildPlanRunStageSpawnParams(input: UnplannedRoleBoundStageRunInput): PlanRunTaskSpawnParams {
 	const role = input.promptPack.role_contract.zh_name;
 	const id = `${input.taskId}-${input.stageId}`;
 	const requiredArtifactPaths = input.promptPack.required_outputs.filter(o => o.required).map(o => o.artifact_path);
@@ -144,7 +144,7 @@ export function buildPlanRunStageSpawnParams(input: RoleBoundStageRunInput): Pla
  */
 export function createPlanRunProductionSpawnAdapter(options: CreatePlanRunProductionSpawnAdapterOptions): {
 	spawnTask(input: { book: PlanExecutionBook; acceptingDir: string; taskId: string }): Promise<SpawnTaskOutput>;
-	spawnStage(input: RoleBoundStageRunInput): Promise<RoleBoundStageRunOutput>;
+	spawnStage(input: UnplannedRoleBoundStageRunInput): Promise<RoleBoundStageRunOutput>;
 } {
 	const { runner } = options;
 
@@ -166,7 +166,7 @@ export function createPlanRunProductionSpawnAdapter(options: CreatePlanRunProduc
 		return runner.run(params);
 	};
 
-	const spawnStage = async (input: RoleBoundStageRunInput): Promise<RoleBoundStageRunOutput> => {
+	const spawnStage = async (input: UnplannedRoleBoundStageRunInput): Promise<RoleBoundStageRunOutput> => {
 		const params = buildPlanRunStageSpawnParams(input);
 		const output = await runner.run(params);
 		// Shallow-safe copy so we never mutate the runner-owned object.

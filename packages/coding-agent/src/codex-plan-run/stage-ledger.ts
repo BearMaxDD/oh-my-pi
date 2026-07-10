@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TodoSnapshot } from "./types";
 
@@ -44,6 +44,20 @@ function sha256Text(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+async function assertLegacyRoutingDoesNotReplaceV2(path: string): Promise<void> {
+	try {
+		const existing = JSON.parse(await readFile(path, "utf8")) as { schema_version?: unknown };
+		if (existing.schema_version === 2) {
+			throw new Error("Cannot overwrite V2 stage routing evidence with a legacy ledger artifact");
+		}
+	} catch (error) {
+		if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+			return;
+		}
+		throw error;
+	}
+}
+
 export async function writeStageLedgerEntry(options: WriteStageLedgerEntryOptions): Promise<StageLedgerEntryResult> {
 	validateSegment(options.taskId);
 	validateSegment(options.stageId);
@@ -53,6 +67,7 @@ export async function writeStageLedgerEntry(options: WriteStageLedgerEntryOption
 
 	const outputPath = join(stageDir, "output.json");
 	const modelRoutingPath = join(stageDir, "model-routing-evidence.json");
+	await assertLegacyRoutingDoesNotReplaceV2(modelRoutingPath);
 	await writeFile(outputPath, `${JSON.stringify(options.output, null, 2)}\n`, "utf8");
 	await writeFile(modelRoutingPath, `${JSON.stringify(options.modelRouting, null, 2)}\n`, "utf8");
 

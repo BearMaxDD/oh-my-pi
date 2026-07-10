@@ -6,9 +6,9 @@ import {
 	createPlanRunProductionSpawnAdapter,
 } from "../../src/codex-plan-run/plan-run-spawn-adapter";
 import type { PromptPack } from "../../src/codex-plan-run/prompt-pack";
-import type { RoleBoundStageRunInput } from "../../src/codex-plan-run/role-bound-stage-scheduler";
+import type { UnplannedRoleBoundStageRunInput } from "../../src/codex-plan-run/role-bound-stage-scheduler";
 
-function fixtureStageRunInput(overrides?: Partial<RoleBoundStageRunInput>): RoleBoundStageRunInput {
+function fixtureStageRunInput(overrides?: Partial<UnplannedRoleBoundStageRunInput>): UnplannedRoleBoundStageRunInput {
 	const promptPack: PromptPack = {
 		schema_version: "superpowers.prompt_pack.v1",
 		run_id: "run-impl-test-42",
