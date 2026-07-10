@@ -184,10 +184,7 @@ describe("resolveStrictRoleModelBinding", () => {
 		expect(binding.modelId).toBe("claude-opus-4-8@default");
 	});
 
-	it("treats an unavailable @-suffixed selector as unavailable without upstream routing", () => {
-		// Strict resolution treats `@` as part of the exact model ID. It neither
-		// interprets the suffix as upstream routing nor falls back to the available
-		// base OpenRouter model.
+	it("rejects an @upstream routing selector as non-concrete when its base model exists", () => {
 		const models = [modelFixture("openrouter", "gpt-5")];
 		const settings = settingsWith({ "superpowers:implementer": "openrouter/gpt-5@cerebras" });
 		expect(() =>
@@ -197,7 +194,7 @@ describe("resolveStrictRoleModelBinding", () => {
 				settings,
 				availableModels: models,
 			}),
-		).toThrow(expect.objectContaining({ code: "role_model_unavailable" }));
+		).toThrow(expect.objectContaining({ code: "role_model_not_concrete" }));
 	});
 
 	it("rejects cross-provider mismatch — exact provider/model must both be available", () => {
@@ -308,6 +305,21 @@ describe("resolveStrictRoleModelBinding", () => {
 			const err = error as { code: string; roleId: string };
 			expect(err.roleId).toBe("superpowers:implementer");
 		}
+	});
+
+	it("rejects non-aggregator @upstream syntax as non-concrete when its base model exists", () => {
+		// Routing suffixes are invalid for strict binding even when a legacy
+		// resolver would discover that this provider cannot route upstream.
+		const models = [reasoningModelFixture("openai", "gpt-4o")];
+		const settings = settingsWith({ "superpowers:implementer": "openai/gpt-4o@upstream" });
+		expect(() =>
+			resolveStrictRoleModelBinding({
+				validatedRoleId: "superpowers:implementer",
+				contract: {} as never,
+				settings,
+				availableModels: models,
+			}),
+		).toThrow(expect.objectContaining({ code: "role_model_not_concrete" }));
 	});
 
 	it("generates a stable bindingHash for identical inputs", () => {

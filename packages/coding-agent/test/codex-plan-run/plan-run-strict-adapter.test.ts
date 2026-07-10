@@ -24,12 +24,24 @@ afterEach(async () => {
 });
 
 const acceptedReview: TaskReviewResult = {
-	approved: true, must_fix_items: [], should_fix_items: [], notes: [],
-	review_summary: "All good", evidence_required: [], verdict: "approved",
+	task_id: "T01",
+	review_skills_used: [],
+	final_tail_skills_used: [],
+	plan_compliance: "PASS",
+	scope_control: "PASS",
+	smoke_tests: "PASS",
+	evidence_quality: "PASS",
+	over_implementation_check: "PASS",
+	result: "TASK_ACCEPTED",
+	must_fix_items: [],
 };
 const mainAcceptanceAccepted: MainThreadAcceptanceReviewResult = {
-	approved: true, must_fix_items: [], should_fix_items: [], notes: [],
-	verdict: "accepted", evidence: { skill: {}, tdd: {}, model_routing: {}, codebase_memory: {} },
+	result: "MAIN_ACCEPTANCE_ACCEPTED",
+	review_round: 1,
+	must_fix_items: [],
+	accepted_at: new Date().toISOString(),
+	evidence: [],
+	next_allowed: "CodexReviewRequestPacket",
 };
 const frameworkBook: PlanExecutionBook = {
 	schema_version: 1, run_id: "run-strict-test", created_at: "2026-07-10T00:00:00.000Z",
@@ -63,13 +75,13 @@ const frameworkBook: PlanExecutionBook = {
 };
 
 
-// ── Model fixture for strict preflight ────────────────────────────────
 
 const model = buildModel({
 	id: "claude-sonnet-4-20250514", provider: "anthropic",
 	api: "anthropic-messages", name: "anthropic/claude-sonnet-4-20250514",
 	baseUrl: "https://api.anthropic.com", input: ["text"] as ("text" | "image")[],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8_192,
+	reasoning: false,
 });
 
 const plan: StrictRoleExecutionPlan = {
@@ -158,7 +170,16 @@ describe("PlanRunSubagentRunner adapter", () => {
 		const dir = await makeDir();
 		const input = { ...await makeUnplannedInput(dir), strictRoleExecutionPlan: plan };
 		const runSpy = vi.fn().mockResolvedValue({} as SpawnTaskOutput);
-		const runRoleBoundSpy = vi.fn().mockResolvedValue({ evidence: [] } as SpawnTaskOutput);
+		const runRoleBoundSpy = vi.fn().mockResolvedValue({
+			task_id: "T01",
+			changed_files: [],
+			tests_run: [],
+			evidence: [],
+			execution_skills_used: [],
+			final_tail_skills_used: [],
+			scope_notes: [],
+			result: "completed",
+		} satisfies SpawnTaskOutput);
 		const adapter = createPlanRunProductionSpawnAdapter({
 			runner: { run: runSpy, runRoleBound: runRoleBoundSpy },
 		});

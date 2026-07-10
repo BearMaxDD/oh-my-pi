@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Effort, Model } from "@oh-my-pi/pi-ai";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
-import { findExactAvailableModel, parseExactModelSelector } from "../config/model-resolver";
+import { findExactAvailableModel, parseExactModelSelector, splitUpstreamRouting } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { AUTO_THINKING } from "../thinking";
 
@@ -45,7 +45,7 @@ export interface StrictRoleModelBinding {
 	modelRef: string;
 	model: Model;
 	thinkingSource: "explicit" | "model_default";
-	thinkingLevel: Effort | ThinkingLevel.Off | undefined;
+	thinkingLevel: Effort | ThinkingLevel | undefined;
 	canonicalSelector: string;
 	createdAt: string;
 	bindingHash: string;
@@ -99,8 +99,19 @@ export function resolveStrictRoleModelBinding(options: ResolveStrictRoleModelBin
 		throw strictError("role_model_not_concrete", roleId, `Role ${roleId} must use an exact provider/model selector`);
 	}
 
+	// Exact model IDs win (for example Vertex's `@default` deployments). Only
+	// an unavailable @-suffixed selector whose exact base exists is routing
+	// syntax rather than a literal unavailable model ID.
 	const model = findExactAvailableModel(availableModels, parsed.provider, parsed.id);
 	if (!model) {
+		const routing = splitUpstreamRouting(configuredSelector);
+		const routedBase = routing ? parseExactModelSelector(routing.base) : undefined;
+		if (
+			routedBase &&
+			findExactAvailableModel(availableModels, routedBase.provider, routedBase.id)
+		) {
+			throw strictError("role_model_not_concrete", roleId, `Role ${roleId} must use an exact provider/model selector`);
+		}
 		throw strictError(
 			"role_model_unavailable",
 			roleId,
@@ -109,7 +120,7 @@ export function resolveStrictRoleModelBinding(options: ResolveStrictRoleModelBin
 	}
 
 	const requestedThinking = parsed.thinkingLevel;
-	let thinkingLevel: Effort | ThinkingLevel.Off | undefined;
+	let thinkingLevel: Effort | ThinkingLevel | undefined;
 	let thinkingSource: StrictRoleModelBinding["thinkingSource"] = "model_default";
 	if (requestedThinking !== undefined) {
 		if (requestedThinking === ThinkingLevel.Off) {

@@ -47,7 +47,7 @@ describe("validateModelRoutingEvidenceForAcceptance — single V2 evidence", () 
 
 	it("rejects where actual is missing", () => {
 		const ev = makeV2Evidence("implementer");
-		delete (ev as Record<string, unknown>).actual;
+		delete (ev as unknown as Record<string, unknown>).actual;
 		const errors = validateModelRoutingEvidenceForAcceptance(ev);
 		expect(errors.length).toBeGreaterThan(0);
 		expect(errors.some(e => e.includes("actual"))).toBe(true);
@@ -108,19 +108,19 @@ describe("validateModelRoutingEvidenceForAcceptance — single V2 evidence", () 
 
 	it("rejects with missing role_decision", () => {
 		const ev = makeV2Evidence("spec-reviewer");
-		delete (ev as Record<string, unknown>).role_decision;
+		delete (ev as unknown as Record<string, unknown>).role_decision;
 		expect(validateModelRoutingEvidenceForAcceptance(ev).some(e => e.includes("role_decision"))).toBe(true);
 	});
 
 	it("rejects with missing contract_validation", () => {
 		const ev = makeV2Evidence("quality-reviewer");
-		delete (ev as Record<string, unknown>).contract_validation;
+		delete (ev as unknown as Record<string, unknown>).contract_validation;
 		expect(validateModelRoutingEvidenceForAcceptance(ev).some(e => e.includes("contract_validation"))).toBe(true);
 	});
 
 	it("rejects with missing model_binding", () => {
 		const ev = makeV2Evidence("acceptance");
-		delete (ev as Record<string, unknown>).model_binding;
+		delete (ev as unknown as Record<string, unknown>).model_binding;
 		expect(validateModelRoutingEvidenceForAcceptance(ev).some(e => e.includes("model_binding"))).toBe(true);
 	});
 });
