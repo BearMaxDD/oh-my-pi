@@ -11,11 +11,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { resolveStrictRoleModelBinding } from "../../src/task/strict-role-model-binding";
-import { Settings } from "../../src/config/settings";
+import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
-import type { Model } from "@oh-my-pi/pi-ai";
+import { Settings } from "../../src/config/settings";
+import { resolveStrictRoleModelBinding } from "../../src/task/strict-role-model-binding";
 
 /**
  * Build a minimal Model fixture with the given provider and id.

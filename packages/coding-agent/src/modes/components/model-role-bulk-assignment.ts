@@ -29,14 +29,14 @@ export type BulkAssignmentAction =
 			selector: string;
 			isConcrete: true;
 			detail?: BulkAssignmentSelectorDetail;
-		}
+	  }
 	| {
 			type: "SET_SELECTOR";
 			selector: string;
 			isConcrete: false;
 			notConcreteReason: string;
 			detail?: BulkAssignmentSelectorDetail;
-		}
+	  }
 	| { type: "SET_THINKING_LEVEL"; thinkingLevel: ConfiguredThinkingLevel }
 	| { type: "SET_AVAILABLE_ROLES"; roleIds: readonly string[] }
 	| { type: "NEXT" }
@@ -70,10 +70,7 @@ function resetBulkAssignmentState(): BulkAssignmentState {
 	};
 }
 
-function normalizeSelectedRoleIds(
-	roleIds: readonly string[],
-	availableRoleIds?: readonly string[],
-): string[] {
+function normalizeSelectedRoleIds(roleIds: readonly string[], availableRoleIds?: readonly string[]): string[] {
 	const available = availableRoleIds === undefined ? undefined : new Set(availableRoleIds);
 	return [...new Set(roleIds.filter(roleId => available === undefined || available.has(roleId)))];
 }
@@ -111,10 +108,7 @@ function previewForSelectedRoles(
  * and settings persistence are performed by the UI/controller; this reducer
  * only records their results and makes legal transitions explicit.
  */
-export function bulkAssignmentReducer(
-	state: BulkAssignmentState,
-	action: BulkAssignmentAction,
-): BulkAssignmentState {
+export function bulkAssignmentReducer(state: BulkAssignmentState, action: BulkAssignmentAction): BulkAssignmentState {
 	switch (action.type) {
 		case "SET_SELECTOR":
 			if (state.step !== "thinking") {
@@ -178,10 +172,7 @@ export function bulkAssignmentReducer(
 			if (state.step !== "roles" || state.selectedRoleIds.length === 0) {
 				return state;
 			}
-			const selectedRoleIds = normalizeSelectedRoleIds(
-				state.selectedRoleIds,
-				state.availableRoleIds,
-			).sort();
+			const selectedRoleIds = normalizeSelectedRoleIds(state.selectedRoleIds, state.availableRoleIds).sort();
 			return {
 				...state,
 				step: "preview",
@@ -200,9 +191,7 @@ export function bulkAssignmentReducer(
 			return state.step === "saving" ? resetBulkAssignmentState() : state;
 
 		case "SAVE_FAILURE":
-			return state.step === "saving"
-				? { ...state, step: "error", errorMessage: action.error }
-				: state;
+			return state.step === "saving" ? { ...state, step: "error", errorMessage: action.error } : state;
 
 		case "RETRY":
 			return state.step === "error" ? { ...state, step: "saving", errorMessage: null } : state;

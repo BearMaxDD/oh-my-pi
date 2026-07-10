@@ -20,15 +20,15 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import type { Model } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { AgentSessionModelLock } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AgentSession, type AgentSessionConfig } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import type { AgentSessionModelLock } from "@oh-my-pi/pi-coding-agent/sdk";
 
 // ── Shared auth/registry fixture ─────────────────────────────────────
 
@@ -45,35 +45,43 @@ beforeAll(async () => {
 	sharedRegistry = new ModelRegistry(sharedAuth);
 });
 
-afterAll(() => { sharedAuth.close(); sharedTempDir.removeSync(); });
+afterAll(() => {
+	sharedAuth.close();
+	sharedTempDir.removeSync();
+});
 
 describe("AgentSessionModelLock", () => {
-	afterEach(() => { vi.restoreAllMocks(); });
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
 	it("type exists and requires strict_role", () => {
 		const lock = { strict_role: "superpowers:implementer" } satisfies AgentSessionModelLock;
 		expect(lock.strict_role).toBe("superpowers:implementer");
 	});
 });
 
-	it("rejects a bound model identity that differs from the session model", () => {
-		const model = sharedRegistry.find("openai-codex", "gpt-5.3-codex-spark");
-		if (!model) throw new Error("Expected codex spark");
-		const agent = new Agent({
-			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
-		});
-
-		expect(() => new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated(),
-			modelRegistry: sharedRegistry,
-			modelLock: {
-				strict_role: "superpowers:implementer",
-				provider: "openai-codex",
-				model_id: "gpt-5.5",
-			},
-		} satisfies AgentSessionConfig)).toThrow("Strict session model lock does not match the session model");
+it("rejects a bound model identity that differs from the session model", () => {
+	const model = sharedRegistry.find("openai-codex", "gpt-5.3-codex-spark");
+	if (!model) throw new Error("Expected codex spark");
+	const agent = new Agent({
+		initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 	});
+
+	expect(
+		() =>
+			new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated(),
+				modelRegistry: sharedRegistry,
+				modelLock: {
+					strict_role: "superpowers:implementer",
+					provider: "openai-codex",
+					model_id: "gpt-5.5",
+				},
+			} satisfies AgentSessionConfig),
+	).toThrow("Strict session model lock does not match the session model");
+});
 
 // ── Context promotion ────────────────────────────────────────────────
 
@@ -98,11 +106,22 @@ describe("Context promotion", () => {
 
 	function overflowMsg(m: { provider: string; id: string; api: string }) {
 		return {
-			role: "assistant" as const, content: [{ type: "text" as const, text: "" }],
-			api: m.api, provider: m.provider, model: m.id,
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-			stopReason: "error" as const, errorMessage: "context_length_exceeded", timestamp: Date.now(),
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: "" }],
+			api: m.api,
+			provider: m.provider,
+			model: m.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error" as const,
+			errorMessage: "context_length_exceeded",
+			timestamp: Date.now(),
 		};
 	}
 
@@ -132,7 +151,8 @@ describe("Context promotion", () => {
 			initialState: { model: spark, systemPrompt: ["Test"], tools: [], messages: [] },
 		});
 		session = new AgentSession({
-			agent, sessionManager: SessionManager.inMemory(),
+			agent,
+			sessionManager: SessionManager.inMemory(),
 			settings: Settings.isolated({ "compaction.enabled": false, "contextPromotion.enabled": true }),
 			modelRegistry: registry,
 		});
@@ -151,7 +171,8 @@ describe("Context promotion", () => {
 			initialState: { model: spark, systemPrompt: ["Test"], tools: [], messages: [] },
 		});
 		session = new AgentSession({
-			agent, sessionManager: SessionManager.inMemory(),
+			agent,
+			sessionManager: SessionManager.inMemory(),
 			settings: Settings.isolated({ "compaction.enabled": false, "contextPromotion.enabled": true }),
 			modelRegistry: registry,
 			modelLock: { strict_role: "superpowers:implementer" } satisfies AgentSessionModelLock,
@@ -181,7 +202,10 @@ describe("Retry-model fallback", () => {
 	});
 
 	afterEach(async () => {
-		if (session) { await session.dispose(); session = undefined; }
+		if (session) {
+			await session.dispose();
+			session = undefined;
+		}
 		auth.close();
 		dir.removeSync();
 	});
@@ -208,7 +232,12 @@ describe("Retry-model fallback", () => {
 	}
 
 	function fallbackSettings() {
-		const s = Settings.isolated({ "compaction.enabled": false, "retry.baseDelayMs": 5, "retry.maxRetries": 2, "retry.fallbackChains": { default: ["openai/gpt-4o-mini"] } });
+		const s = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 2,
+			"retry.fallbackChains": { default: ["openai/gpt-4o-mini"] },
+		});
 		s.setModelRole("default", "anthropic/claude-sonnet-4-5");
 		return s;
 	}
@@ -217,7 +246,12 @@ describe("Retry-model fallback", () => {
 		const primary = registry.find("anthropic", "claude-sonnet-4-5");
 		if (!primary) throw new Error("Expected claude-sonnet-4-5");
 		const agent = makeAgent(primary, "anthropic/claude-sonnet-4-5", "openai/gpt-4o-mini");
-		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings: fallbackSettings(), modelRegistry: registry });
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: fallbackSettings(),
+			modelRegistry: registry,
+		});
 		await session.prompt("Recover").catch(() => {});
 		await session.waitForIdle();
 		expect(session.model?.id).toBe("gpt-4o-mini");
@@ -228,7 +262,10 @@ describe("Retry-model fallback", () => {
 		if (!primary) throw new Error("Expected claude-sonnet-4-5");
 		const agent = makeAgent(primary, "anthropic/claude-sonnet-4-5", "openai/gpt-4o-mini");
 		session = new AgentSession({
-			agent, sessionManager: SessionManager.inMemory(), settings: fallbackSettings(), modelRegistry: registry,
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: fallbackSettings(),
+			modelRegistry: registry,
 			modelLock: { strict_role: "superpowers:implementer" } satisfies AgentSessionModelLock,
 		} satisfies AgentSessionConfig);
 		await session.prompt("Recover").catch(() => {});

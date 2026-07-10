@@ -24,19 +24,23 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 // v1 import — exists, will resolve
-import { validateModelRoutingEvidenceForAcceptance } from "../../src/codex-plan-run/model-routing-evidence";
-
 // v2 imports — do NOT exist yet → RED evidence
 import {
 	type ModelRoutingEvidenceV2,
+	validateModelRoutingEvidenceForAcceptance,
 	writeModelRoutingEvidenceV2,
 } from "../../src/codex-plan-run/model-routing-evidence";
 
 // ── Fixture helpers ─────────────────────────────────────────────────────
 
-function makeEvidence(overrides: Omit<Partial<ModelRoutingEvidenceV2>, "run_id" | "task_id" | "stage_id"> & { run_id: string; task_id: string; stage_id: string }): ModelRoutingEvidenceV2 {
+function makeEvidence(
+	overrides: Omit<Partial<ModelRoutingEvidenceV2>, "run_id" | "task_id" | "stage_id"> & {
+		run_id: string;
+		task_id: string;
+		stage_id: string;
+	},
+): ModelRoutingEvidenceV2 {
 	const { run_id, task_id, stage_id, ...rest } = overrides;
 	return {
 		schema_version: 2,
@@ -283,12 +287,24 @@ describe("Model routing evidence v2", () => {
 	});
 
 	it("leaves artifact unchanged on illegal state transition attempt", async () => {
-		const original = makeEvidence({ run_id: "R1", task_id: "T02", stage_id: "S1", status: "preflight_passed", resolved_model: "should-stay" });
+		const original = makeEvidence({
+			run_id: "R1",
+			task_id: "T02",
+			stage_id: "S1",
+			status: "preflight_passed",
+			resolved_model: "should-stay",
+		});
 		const path = await writeModelRoutingEvidenceV2(original, tmpDir);
 
 		const rawBefore = await readFile(path, "utf-8");
 
-		const illegal = makeEvidence({ run_id: "R1", task_id: "T02", stage_id: "S1", status: "acceptance_failed", resolved_model: "should-never-appear" });
+		const illegal = makeEvidence({
+			run_id: "R1",
+			task_id: "T02",
+			stage_id: "S1",
+			status: "acceptance_failed",
+			resolved_model: "should-never-appear",
+		});
 		await expect(writeModelRoutingEvidenceV2(illegal, tmpDir)).rejects.toThrow();
 
 		// Byte-for-byte unchanged
@@ -302,8 +318,20 @@ describe("Model routing evidence v2", () => {
 
 	it("validates acceptance when actual.exact_match is true and all flags clean", () => {
 		const evidence = makeEvidence({
-			run_id: "R1", task_id: "T02", stage_id: "S1",
-			actual: { exact_match: true, fallback_used: false, parent_model_used: false, context_promotion_used: false, provider: "anthropic", model_id: "claude-sonnet-4-20250514", thinking_level: "high", session_created: true, first_dispatch: true },
+			run_id: "R1",
+			task_id: "T02",
+			stage_id: "S1",
+			actual: {
+				exact_match: true,
+				fallback_used: false,
+				parent_model_used: false,
+				context_promotion_used: false,
+				provider: "anthropic",
+				model_id: "claude-sonnet-4-20250514",
+				thinking_level: "high",
+				session_created: true,
+				first_dispatch: true,
+			},
 		});
 		const errors = validateModelRoutingEvidenceForAcceptance(evidence);
 		expect(errors).toEqual([]);
@@ -311,8 +339,20 @@ describe("Model routing evidence v2", () => {
 
 	it("rejects acceptance when actual.exact_match is false", () => {
 		const evidence = makeEvidence({
-			run_id: "R2", task_id: "T02", stage_id: "S1",
-			actual: { exact_match: false, fallback_used: false, parent_model_used: false, context_promotion_used: false, provider: "anthropic", model_id: "claude-sonnet-4-20250514", thinking_level: "high", session_created: true, first_dispatch: true },
+			run_id: "R2",
+			task_id: "T02",
+			stage_id: "S1",
+			actual: {
+				exact_match: false,
+				fallback_used: false,
+				parent_model_used: false,
+				context_promotion_used: false,
+				provider: "anthropic",
+				model_id: "claude-sonnet-4-20250514",
+				thinking_level: "high",
+				session_created: true,
+				first_dispatch: true,
+			},
 		});
 		const errors = validateModelRoutingEvidenceForAcceptance(evidence);
 		expect(errors).not.toEqual([]);
@@ -321,8 +361,20 @@ describe("Model routing evidence v2", () => {
 
 	it("rejects acceptance when actual.fallback_used is true", () => {
 		const evidence = makeEvidence({
-			run_id: "R1", task_id: "T02", stage_id: "S1",
-			actual: { exact_match: true, fallback_used: true, parent_model_used: false, context_promotion_used: false, provider: "anthropic", model_id: "claude-sonnet-4-20250514", thinking_level: "high", session_created: true, first_dispatch: true },
+			run_id: "R1",
+			task_id: "T02",
+			stage_id: "S1",
+			actual: {
+				exact_match: true,
+				fallback_used: true,
+				parent_model_used: false,
+				context_promotion_used: false,
+				provider: "anthropic",
+				model_id: "claude-sonnet-4-20250514",
+				thinking_level: "high",
+				session_created: true,
+				first_dispatch: true,
+			},
 		});
 		const errors = validateModelRoutingEvidenceForAcceptance(evidence);
 		expect(errors).not.toEqual([]);
@@ -331,8 +383,20 @@ describe("Model routing evidence v2", () => {
 
 	it("rejects acceptance when actual.parent_model_used is true", () => {
 		const evidence = makeEvidence({
-			run_id: "R1", task_id: "T02", stage_id: "S1",
-			actual: { exact_match: true, fallback_used: false, parent_model_used: true, context_promotion_used: false, provider: "anthropic", model_id: "claude-sonnet-4-20250514", thinking_level: "high", session_created: true, first_dispatch: true },
+			run_id: "R1",
+			task_id: "T02",
+			stage_id: "S1",
+			actual: {
+				exact_match: true,
+				fallback_used: false,
+				parent_model_used: true,
+				context_promotion_used: false,
+				provider: "anthropic",
+				model_id: "claude-sonnet-4-20250514",
+				thinking_level: "high",
+				session_created: true,
+				first_dispatch: true,
+			},
 		});
 		const errors = validateModelRoutingEvidenceForAcceptance(evidence);
 		expect(errors).not.toEqual([]);
@@ -341,8 +405,20 @@ describe("Model routing evidence v2", () => {
 
 	it("rejects acceptance when actual.context_promotion_used is true", () => {
 		const evidence = makeEvidence({
-			run_id: "R1", task_id: "T02", stage_id: "S1",
-			actual: { exact_match: true, fallback_used: false, parent_model_used: false, context_promotion_used: true, provider: "anthropic", model_id: "claude-sonnet-4-20250514", thinking_level: "high", session_created: true, first_dispatch: true },
+			run_id: "R1",
+			task_id: "T02",
+			stage_id: "S1",
+			actual: {
+				exact_match: true,
+				fallback_used: false,
+				parent_model_used: false,
+				context_promotion_used: true,
+				provider: "anthropic",
+				model_id: "claude-sonnet-4-20250514",
+				thinking_level: "high",
+				session_created: true,
+				first_dispatch: true,
+			},
 		});
 		const errors = validateModelRoutingEvidenceForAcceptance(evidence);
 		expect(errors).not.toEqual([]);
@@ -350,14 +426,16 @@ describe("Model routing evidence v2", () => {
 	});
 
 	it("rejects acceptance when actual is missing for completed v2 evidence", () => {
-		const evidence = JSON.parse(JSON.stringify({
-			schema_version: 2,
-			run_id: "R1",
-			task_id: "T02",
-			stage_id: "S1",
-			status: "completed",
-			resolved_model: "anthropic/claude-sonnet-4-20250514",
-		}));
+		const evidence = JSON.parse(
+			JSON.stringify({
+				schema_version: 2,
+				run_id: "R1",
+				task_id: "T02",
+				stage_id: "S1",
+				status: "completed",
+				resolved_model: "anthropic/claude-sonnet-4-20250514",
+			}),
+		);
 		const errors = validateModelRoutingEvidenceForAcceptance(evidence);
 		expect(errors).not.toEqual([]);
 		expect(errors.join(" ")).toMatch(/actual/i);
@@ -365,9 +443,21 @@ describe("Model routing evidence v2", () => {
 
 	it("rejects acceptance when resolved_model is null for role-bound v2 evidence", () => {
 		const evidence = makeEvidence({
-			run_id: "R1", task_id: "T02", stage_id: "S1",
+			run_id: "R1",
+			task_id: "T02",
+			stage_id: "S1",
 			resolved_model: null,
-			actual: { exact_match: true, fallback_used: false, parent_model_used: false, context_promotion_used: false, provider: "anthropic", model_id: "claude-sonnet-4-20250514", thinking_level: "high", session_created: true, first_dispatch: true },
+			actual: {
+				exact_match: true,
+				fallback_used: false,
+				parent_model_used: false,
+				context_promotion_used: false,
+				provider: "anthropic",
+				model_id: "claude-sonnet-4-20250514",
+				thinking_level: "high",
+				session_created: true,
+				first_dispatch: true,
+			},
 		});
 		const errors = validateModelRoutingEvidenceForAcceptance(evidence);
 		expect(errors).not.toEqual([]);
@@ -376,9 +466,21 @@ describe("Model routing evidence v2", () => {
 
 	it("rejects acceptance when resolved_model is undefined for role-bound v2 evidence", () => {
 		const evidence = makeEvidence({
-			run_id: "R1", task_id: "T02", stage_id: "S1",
+			run_id: "R1",
+			task_id: "T02",
+			stage_id: "S1",
 			resolved_model: undefined,
-			actual: { exact_match: true, fallback_used: false, parent_model_used: false, context_promotion_used: false, provider: "anthropic", model_id: "claude-sonnet-4-20250514", thinking_level: "high", session_created: true, first_dispatch: true },
+			actual: {
+				exact_match: true,
+				fallback_used: false,
+				parent_model_used: false,
+				context_promotion_used: false,
+				provider: "anthropic",
+				model_id: "claude-sonnet-4-20250514",
+				thinking_level: "high",
+				session_created: true,
+				first_dispatch: true,
+			},
 		});
 		const errors = validateModelRoutingEvidenceForAcceptance(evidence);
 		expect(errors).not.toEqual([]);
@@ -600,7 +702,10 @@ describe("Model routing evidence v2", () => {
 			const evidence = fullV2Evidence();
 			const path = await writeModelRoutingEvidenceV2(evidence, tmpDir);
 			const saved = JSON.parse(await readFile(path, "utf-8"));
-			expect(saved.role_decision.advisor).toEqual({ model: "anthropic/claude-sonnet-4-20250514", result: "approved" });
+			expect(saved.role_decision.advisor).toEqual({
+				model: "anthropic/claude-sonnet-4-20250514",
+				result: "approved",
+			});
 		});
 
 		// ── contract_validation fields ────────────────────────────────
@@ -785,7 +890,10 @@ describe("Model routing evidence v2", () => {
 			const v1Dir = join(tmpDir, "tasks", "T02");
 			await mkdir(v1Dir, { recursive: true });
 			const v1Path = join(v1Dir, "model-routing-evidence.json");
-			await writeFile(v1Path, `${JSON.stringify({ schema_version: 1, run_id: "R1", task_id: "T02", resolved_model: "anthropic/claude-sonnet-4-20250514" }, null, 2)}\n`);
+			await writeFile(
+				v1Path,
+				`${JSON.stringify({ schema_version: 1, run_id: "R1", task_id: "T02", resolved_model: "anthropic/claude-sonnet-4-20250514" }, null, 2)}\n`,
+			);
 
 			// Write v2 evidence without stage_id to the same task-level path.
 			// Must not throw TypeError; should follow explicit migration behavior.

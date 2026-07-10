@@ -20,8 +20,8 @@ import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition, SingleResult, TaskParams } from "@oh-my-pi/pi-coding-agent/task/types";
-import * as modelRoutingModule from "../../src/task/model-routing";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import * as modelRoutingModule from "../../src/task/model-routing";
 
 const taskAgent: AgentDefinition = {
 	name: "task",

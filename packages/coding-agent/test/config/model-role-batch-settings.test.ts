@@ -11,10 +11,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Settings } from "../../src/config/settings";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
+import { Settings } from "../../src/config/settings";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "../helpers/settings-test-state";
 
 describe("Settings.setModelRolesAtomic", () => {
@@ -212,9 +212,7 @@ describe("Settings.setModelRolesAtomic", () => {
 		settings.override("modelRoles", { default: "" });
 
 		// Atomic save must succeed despite empty overlay value
-		await expect(
-			settings.setModelRolesAtomic({ default: "new/model" }),
-		).resolves.toBeDefined();
+		await expect(settings.setModelRolesAtomic({ default: "new/model" })).resolves.toBeDefined();
 
 		// Effective value must be the assigned one, not the empty overlay
 		expect(settings.getModelRole("default")).toBe("new/model");
@@ -285,14 +283,12 @@ describe("Settings.setModelRolesAtomic", () => {
 			// with .<config-basename>., ends .tmp) and use exclusive creation + 0o600.
 			const configBasename = path.basename(getConfigPath());
 			const configDir = path.dirname(getConfigPath());
-			const tempOpenCalls = openSpy.mock.calls.filter(
-				([pathArg, flag, mode]) => {
-					if (typeof pathArg !== "string" || flag !== "wx" || mode !== 0o600) return false;
-					const dir = path.dirname(pathArg);
-					const base = path.basename(pathArg);
-					return dir === configDir && base.startsWith(`.${configBasename}.`) && base.endsWith(".tmp");
-				},
-			);
+			const tempOpenCalls = openSpy.mock.calls.filter(([pathArg, flag, mode]) => {
+				if (typeof pathArg !== "string" || flag !== "wx" || mode !== 0o600) return false;
+				const dir = path.dirname(pathArg);
+				const base = path.basename(pathArg);
+				return dir === configDir && base.startsWith(`.${configBasename}.`) && base.endsWith(".tmp");
+			});
 			expect(tempOpenCalls.length).toBeGreaterThanOrEqual(1);
 		} finally {
 			openSpy.mockRestore();

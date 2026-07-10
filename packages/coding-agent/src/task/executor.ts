@@ -2463,12 +2463,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				toolNames,
 				...(strictRoleExecutionGate
 					? {
-						modelLock: {
-							strict_role: options.strictRoleExecutionPlan!.contract.roleId,
-							provider: strictRoleExecutionGate.model.provider,
-							model_id: strictRoleExecutionGate.model.id,
-						},
-					}
+							modelLock: {
+								strict_role: options.strictRoleExecutionPlan!.contract.roleId,
+								provider: strictRoleExecutionGate.model.provider,
+								model_id: strictRoleExecutionGate.model.id,
+							},
+						}
 					: {}),
 				outputSchema,
 				requireYieldTool: true,

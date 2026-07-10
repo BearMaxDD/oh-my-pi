@@ -107,7 +107,9 @@ import {
 	SecretObfuscator,
 } from "./secrets";
 import { AgentSession, type AgentSessionModelLock } from "./session/agent-session";
+
 export type { AgentSessionModelLock } from "./session/agent-session";
+
 import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
 import {

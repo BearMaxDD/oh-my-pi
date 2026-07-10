@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { MODEL_ROLES } from "../config/model-roles";
 import type { ModelRegistry } from "../config/model-registry";
+import { MODEL_ROLES } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import type { AdvisorFinding } from "./advisor-findings";
 import { writeAdvisorFindings } from "./advisor-findings";
@@ -23,8 +23,8 @@ import type {
 	TaskExecutionOutput,
 } from "./main-acceptance-review";
 import {
-	type ModelRoutingEvidenceV2,
 	createModelRoutingEvidence,
+	type ModelRoutingEvidenceV2,
 	validateModelRoutingEvidenceForAcceptance,
 	writeModelRoutingEvidence,
 } from "./model-routing-evidence";
@@ -45,7 +45,6 @@ import {
 	buildRoleBoundStageRunInputs,
 	type RoleBoundStageRunInput,
 	type StageOutputRef,
-	type UnplannedRoleBoundStageRunInput,
 } from "./role-bound-stage-scheduler";
 import {
 	buildBusinessSimulationScenarios,
@@ -58,7 +57,6 @@ import {
 	type StageManifestEntry,
 	sha256Json,
 	writeRoleRegistrySnapshot,
-	writeStageLedgerEntry,
 	writeTodoSnapshotArtifact,
 } from "./stage-ledger";
 import {
@@ -290,11 +288,15 @@ async function validateStrictStageEvidence(stage: RoleBoundStageRunInput): Promi
 		throw new Error(`Strict stage ${stage.taskId}/${stage.stageId} requires V2 routing evidence`);
 	}
 	if (decoded.status !== "completed" || decoded.actual === undefined) {
-		throw new Error(`Strict stage ${stage.taskId}/${stage.stageId} routing evidence must be completed with actual runtime evidence`);
+		throw new Error(
+			`Strict stage ${stage.taskId}/${stage.stageId} routing evidence must be completed with actual runtime evidence`,
+		);
 	}
 	const validationErrors = validateModelRoutingEvidenceForAcceptance(decoded);
 	if (validationErrors.length > 0) {
-		throw new Error(`Strict stage ${stage.taskId}/${stage.stageId} routing evidence rejected: ${validationErrors.join("; ")}`);
+		throw new Error(
+			`Strict stage ${stage.taskId}/${stage.stageId} routing evidence rejected: ${validationErrors.join("; ")}`,
+		);
 	}
 	return decoded;
 }
@@ -312,7 +314,9 @@ async function writeStrictStageLedgerEntry(options: {
 	const outputPath = join(stageDir, "output.json");
 	const modelRoutingPath = join(stageDir, "model-routing-evidence.json");
 	if (options.routingEvidencePath !== modelRoutingPath) {
-		throw new Error(`Strict stage ${options.taskId}/${options.stageId} routing evidence path does not match its immutable stage path`);
+		throw new Error(
+			`Strict stage ${options.taskId}/${options.stageId} routing evidence path does not match its immutable stage path`,
+		);
 	}
 	const advisorDir = join(stageDir, "advisor-gates");
 	await mkdir(advisorDir, { recursive: true });
@@ -325,7 +329,12 @@ async function writeStrictStageLedgerEntry(options: {
 	}
 	return {
 		key: `${options.taskId}:${options.stageId}`,
-		manifest: { output_path: outputPath, model_routing_path: modelRoutingPath, advisor_gate_paths: advisorGatePaths, status: options.status },
+		manifest: {
+			output_path: outputPath,
+			model_routing_path: modelRoutingPath,
+			advisor_gate_paths: advisorGatePaths,
+			status: options.status,
+		},
 	};
 }
 
@@ -540,7 +549,10 @@ export async function runPlanRunDriver(
 				stageOutput = {
 					...stageOutput,
 					evidence: uniqueStrings([...stageOutput.evidence, stageInput.strictRoleExecutionPlan.evidence.path]),
-					evidence_paths: uniqueStrings([...stageOutput.evidence_paths, stageInput.strictRoleExecutionPlan.evidence.path]),
+					evidence_paths: uniqueStrings([
+						...stageOutput.evidence_paths,
+						stageInput.strictRoleExecutionPlan.evidence.path,
+					]),
 				};
 				if (input.enableAdvisorGate === true) {
 					// after_stage: evaluate stage output using FULL changed_files (not filtered)

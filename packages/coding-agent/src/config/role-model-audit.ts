@@ -1,17 +1,12 @@
+import { validateRoleContractForTask } from "../task/role-contract-validator";
+import { resolveStrictRoleModelBinding, StrictRoleModelBindingError } from "../task/strict-role-model-binding";
 import type { ModelRegistry } from "./model-registry";
 import { getKnownRoleIds, getRoleInfo } from "./model-roles";
 import type { Settings } from "./settings";
-import { resolveStrictRoleModelBinding, StrictRoleModelBindingError } from "../task/strict-role-model-binding";
-import { validateRoleContractForTask } from "../task/role-contract-validator";
 
 export type RoleModelContractStatus = "complete" | "incomplete";
 
-export type RoleModelAuditStatus =
-	| "unconfigured"
-	| "not_concrete"
-	| "unavailable"
-	| "thinking_unsupported"
-	| "valid";
+export type RoleModelAuditStatus = "unconfigured" | "not_concrete" | "unavailable" | "thinking_unsupported" | "valid";
 
 export interface RoleModelAuditEntry {
 	roleId: string;

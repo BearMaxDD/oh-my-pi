@@ -2,16 +2,18 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPlanRunProductionSpawnAdapter } from "../../src/codex-plan-run/plan-run-spawn-adapter";
-import type { UnplannedRoleBoundStageRunInput } from "../../src/codex-plan-run/role-bound-stage-scheduler";
-import type { StrictRoleExecutionPlan } from "../../src/codex-plan-run/role-bound-stage-scheduler";
-import type { SpawnTaskOutput, PlanRunDriverDeps } from "../../src/codex-plan-run/driver";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { PlanRunDriverDeps, SpawnTaskOutput } from "../../src/codex-plan-run/driver";
 import { runPlanRunDriver } from "../../src/codex-plan-run/driver";
 import type { PlanExecutionBook } from "../../src/codex-plan-run/execution-book";
 import type { MainThreadAcceptanceReviewResult } from "../../src/codex-plan-run/main-acceptance-review";
+import { createPlanRunProductionSpawnAdapter } from "../../src/codex-plan-run/plan-run-spawn-adapter";
+import type {
+	StrictRoleExecutionPlan,
+	UnplannedRoleBoundStageRunInput,
+} from "../../src/codex-plan-run/role-bound-stage-scheduler";
 import type { TaskReviewResult } from "../../src/codex-plan-run/task-review";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
 
 const tempDirs: string[] = [];
 async function makeDir(): Promise<string> {
@@ -44,60 +46,99 @@ const mainAcceptanceAccepted: MainThreadAcceptanceReviewResult = {
 	next_allowed: "CodexReviewRequestPacket",
 };
 const frameworkBook: PlanExecutionBook = {
-	schema_version: 1, run_id: "run-strict-test", created_at: "2026-07-10T00:00:00.000Z",
-	plan: { path: "/plan.md", sha256: "abc", repo_path: "/repo" }, accepting_dir: "/tmp",
+	schema_version: 1,
+	run_id: "run-strict-test",
+	created_at: "2026-07-10T00:00:00.000Z",
+	plan: { path: "/plan.md", sha256: "abc", repo_path: "/repo" },
+	accepting_dir: "/tmp",
 	intake_gate: [{ gate: "plan_path_exists", result: "PASS", evidence: "/plan.md" }],
 	project_recon: {
-		repo_path: "/repo", relevant_modules: [], likely_files: [], existing_patterns: [],
-		test_commands: ["bun test"], build_commands: [], style_conventions: [],
-		risk_areas: [], forbidden_changes: [], task_file_map: {},
+		repo_path: "/repo",
+		relevant_modules: [],
+		likely_files: [],
+		existing_patterns: [],
+		test_commands: ["bun test"],
+		build_commands: [],
+		style_conventions: [],
+		risk_areas: [],
+		forbidden_changes: [],
+		task_file_map: {},
 	},
-	required_execution_skills: [], required_review_skills: [], final_tail_skills: [],
+	required_execution_skills: [],
+	required_review_skills: [],
+	final_tail_skills: [],
 	final_acceptance_commands: ["bun test"],
-	tasks: [{
-		id: "T01", title: "Test task", source: "plan-section-1", todo: "Do it",
-		execution_skills: [], review_skills: [], final_tail_skills: [],
-		allowed_files: [], forbidden_files: [], smoke_commands: ["bun test"],
-		tdd_gates: {
-			red: { command: "bun test", expected: "FAIL", evidence_required: "RED_EVIDENCE" },
-			green: { command: "bun test", expected: "PASS", evidence_required: "GREEN_EVIDENCE" },
-			regression: { command: "bun test", expected: "PASS", evidence_required: "REGRESSION_EVIDENCE" },
+	tasks: [
+		{
+			id: "T01",
+			title: "Test task",
+			source: "plan-section-1",
+			todo: "Do it",
+			execution_skills: [],
+			review_skills: [],
+			final_tail_skills: [],
+			allowed_files: [],
+			forbidden_files: [],
+			smoke_commands: ["bun test"],
+			tdd_gates: {
+				red: { command: "bun test", expected: "FAIL", evidence_required: "RED_EVIDENCE" },
+				green: { command: "bun test", expected: "PASS", evidence_required: "GREEN_EVIDENCE" },
+				regression: { command: "bun test", expected: "PASS", evidence_required: "REGRESSION_EVIDENCE" },
+			},
+			advisor_watch_points: [],
+			required_skill_evidence: [],
+			skill_evidence: { execution: [], review: [], final_tail: [] },
+			implementation_analysis: "",
+			execution_scope: {
+				goal: "Do it",
+				allowed_files: [],
+				forbidden_files: [],
+				likely_files: [],
+				existing_patterns: [],
+				out_of_scope: [],
+			},
+			implementation_steps: [],
+			review_gate: { acceptance_criteria: [], smoke_commands: [], required_evidence: [], must_fix_conditions: [] },
 		},
-		advisor_watch_points: [], required_skill_evidence: [],
-		skill_evidence: { execution: [], review: [], final_tail: [] },
-		implementation_analysis: "", execution_scope: {
-			goal: "Do it", allowed_files: [], forbidden_files: [],
-			likely_files: [], existing_patterns: [], out_of_scope: [],
-		},
-		implementation_steps: [],
-		review_gate: { acceptance_criteria: [], smoke_commands: [], required_evidence: [], must_fix_conditions: [] },
-	}],
+	],
 };
 
-
-
 const model = buildModel({
-	id: "claude-sonnet-4-20250514", provider: "anthropic",
-	api: "anthropic-messages", name: "anthropic/claude-sonnet-4-20250514",
-	baseUrl: "https://api.anthropic.com", input: ["text"] as ("text" | "image")[],
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8_192,
+	id: "claude-sonnet-4-20250514",
+	provider: "anthropic",
+	api: "anthropic-messages",
+	name: "anthropic/claude-sonnet-4-20250514",
+	baseUrl: "https://api.anthropic.com",
+	input: ["text"] as ("text" | "image")[],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 200_000,
+	maxTokens: 8_192,
 	reasoning: false,
 });
 
 const plan: StrictRoleExecutionPlan = {
 	decision: {
-		source: "explicit_stage", selectedRoleId: "superpowers:implementer", confidence: 1,
-		reasons: ["explicit"], candidates: [{ roleId: "superpowers:implementer", confidence: 1, reason: "explicit" }],
+		source: "explicit_stage",
+		selectedRoleId: "superpowers:implementer",
+		confidence: 1,
+		reasons: ["explicit"],
+		candidates: [{ roleId: "superpowers:implementer", confidence: 1, reason: "explicit" }],
 	},
 	contract: { passed: true, roleId: "superpowers:implementer", contractVersion: "1.0", checks: [] },
 	binding: {
-		schemaVersion: 1 as const, contractVersion: "1.0", roleId: "superpowers:implementer",
+		schemaVersion: 1 as const,
+		contractVersion: "1.0",
+		roleId: "superpowers:implementer",
 		configuredSelector: "anthropic/claude-sonnet-4-20250514",
-		provider: "anthropic", modelId: "claude-sonnet-4-20250514",
-		modelRef: "anthropic/claude-sonnet-4-20250514", model,
-		thinkingSource: "model_default" as const, thinkingLevel: undefined,
+		provider: "anthropic",
+		modelId: "claude-sonnet-4-20250514",
+		modelRef: "anthropic/claude-sonnet-4-20250514",
+		model,
+		thinkingSource: "model_default" as const,
+		thinkingLevel: undefined,
 		canonicalSelector: "anthropic/claude-sonnet-4-20250514",
-		createdAt: "2026-07-10T00:00:00.000Z", bindingHash: "abc123",
+		createdAt: "2026-07-10T00:00:00.000Z",
+		bindingHash: "abc123",
 	},
 	evidence: { path: "/tmp/evidence.json", status: "preflight_passed" as const, preflight: undefined },
 };
@@ -126,34 +167,66 @@ function strictPreflight() {
 describe("PlanRunSubagentRunner adapter", () => {
 	const emptyPromptPack = {
 		schema_version: "superpowers.prompt_pack.v1" as const,
-		run_id: "test-run", task_id: "T01", stage_id: "implementer", role_id: "superpowers:implementer",
+		run_id: "test-run",
+		task_id: "T01",
+		stage_id: "implementer",
+		role_id: "superpowers:implementer",
 		role_contract: {
-			zh_name: "实现者", zh_description: "实现需求",
-			may_edit_production_code: true, may_edit_test_code: false, read_only: false,
-			success_definition: ["正确"], failure_definition: ["错误"],
+			zh_name: "实现者",
+			zh_description: "实现需求",
+			may_edit_production_code: true,
+			may_edit_test_code: false,
+			read_only: false,
+			success_definition: ["正确"],
+			failure_definition: ["错误"],
 		},
-		context_bundle: { source_documents: [], relevant_code_snippets: [], previous_stage_outputs: [], known_constraints: [] },
-		allowed_operations: [], forbidden_operations: [], required_outputs: [],
-		return_schema: { id: "v1" }, advisor_checkpoints: [],
+		context_bundle: {
+			source_documents: [],
+			relevant_code_snippets: [],
+			previous_stage_outputs: [],
+			known_constraints: [],
+		},
+		allowed_operations: [],
+		forbidden_operations: [],
+		required_outputs: [],
+		return_schema: { id: "v1" },
+		advisor_checkpoints: [],
 	};
 
 	async function makeUnplannedInput(acceptingDir: string): Promise<UnplannedRoleBoundStageRunInput> {
 		await mkdir(join(acceptingDir, "tasks", "T01", "prompt-packs"), { recursive: true });
 		return {
 			book: {
-				schema_version: 1, run_id: "test-run", created_at: "2026-07-10T00:00:00.000Z",
+				schema_version: 1,
+				run_id: "test-run",
+				created_at: "2026-07-10T00:00:00.000Z",
 				plan: { path: "/plan.md", sha256: "abc", repo_path: "/repo" },
-				accepting_dir: acceptingDir, intake_gate: [],
+				accepting_dir: acceptingDir,
+				intake_gate: [],
 				project_recon: {
-					repo_path: "/repo", relevant_modules: [], likely_files: [],
-					existing_patterns: [], test_commands: [], build_commands: [],
-					style_conventions: [], risk_areas: [], forbidden_changes: [], task_file_map: {},
+					repo_path: "/repo",
+					relevant_modules: [],
+					likely_files: [],
+					existing_patterns: [],
+					test_commands: [],
+					build_commands: [],
+					style_conventions: [],
+					risk_areas: [],
+					forbidden_changes: [],
+					task_file_map: {},
 				},
-				required_execution_skills: [], required_review_skills: [], final_tail_skills: [],
-				final_acceptance_commands: [], tasks: [],
+				required_execution_skills: [],
+				required_review_skills: [],
+				final_tail_skills: [],
+				final_acceptance_commands: [],
+				tasks: [],
 			},
-			acceptingDir, taskId: "T01", stageId: "implementer",
-			promptPack: emptyPromptPack, modelRole: "superpowers:implementer", previousStageOutputs: [],
+			acceptingDir,
+			taskId: "T01",
+			stageId: "implementer",
+			promptPack: emptyPromptPack,
+			modelRole: "superpowers:implementer",
+			previousStageOutputs: [],
 		};
 	}
 
@@ -168,7 +241,7 @@ describe("PlanRunSubagentRunner adapter", () => {
 
 	it("calls runner.runRoleBound for a preflighted strict input", async () => {
 		const dir = await makeDir();
-		const input = { ...await makeUnplannedInput(dir), strictRoleExecutionPlan: plan };
+		const input = { ...(await makeUnplannedInput(dir)), strictRoleExecutionPlan: plan };
 		const runSpy = vi.fn().mockResolvedValue({} as SpawnTaskOutput);
 		const runRoleBoundSpy = vi.fn().mockResolvedValue({
 			task_id: "T01",
@@ -187,86 +260,144 @@ describe("PlanRunSubagentRunner adapter", () => {
 		await adapter.spawnStage(input);
 
 		expect(runSpy).not.toHaveBeenCalled();
-		expect(runRoleBoundSpy).toHaveBeenCalledWith(
-			expect.objectContaining({ id: "T01-implementer" }),
-			{ strictRoleExecutionPlan: plan },
-		);
+		expect(runRoleBoundSpy).toHaveBeenCalledWith(expect.objectContaining({ id: "T01-implementer" }), {
+			strictRoleExecutionPlan: plan,
+		});
 	});
 	function makeDeps(acceptingDir: string): PlanRunDriverDeps {
 		return {
 			spawnTask: async () => ({
-				task_id: "T01", stage_id: "", role_id: "",
-				schema_version: "v1", result: "completed" as const,
-				changed_files: [], tests_run: [], evidence: [], evidence_paths: [],
-				output_path: "", execution_skills_used: [], final_tail_skills_used: [],
-				scope_notes: [], agentId: "agent-1", modelRole: "executor",
-				resolvedModel: "claude-opus-4", advisorFindings: [],
+				task_id: "T01",
+				stage_id: "",
+				role_id: "",
+				schema_version: "v1",
+				result: "completed" as const,
+				changed_files: [],
+				tests_run: [],
+				evidence: [],
+				evidence_paths: [],
+				output_path: "",
+				execution_skills_used: [],
+				final_tail_skills_used: [],
+				scope_notes: [],
+				agentId: "agent-1",
+				modelRole: "executor",
+				resolvedModel: "claude-opus-4",
+				advisorFindings: [],
 			}),
-			spawnStage: async (input) => {
+			spawnStage: async input => {
 				// Update V2 evidence from preflight_passed → completed with actual.
 				await writeFile(
 					join(acceptingDir, "tasks", input.taskId, "stages", input.stageId, "model-routing-evidence.json"),
-					JSON.stringify({
-						schema_version: 2, run_id: "run-strict-test", task_id: input.taskId, stage_id: input.stageId,
-						status: "completed", agent_id: `${input.stageId}-agent`, model_role: input.modelRole,
+					`${JSON.stringify({
+						schema_version: 2,
+						run_id: "run-strict-test",
+						task_id: input.taskId,
+						stage_id: input.stageId,
+						status: "completed",
+						agent_id: `${input.stageId}-agent`,
+						model_role: input.modelRole,
 						requested_model: "anthropic/claude-sonnet-4-20250514",
 						resolved_model: "anthropic/claude-sonnet-4-20250514",
-						fallback_roles: [], fallback_used: false, model_overrides: [],
-						service_tier: "default", thinking_level: "high",
+						fallback_roles: [],
+						fallback_used: false,
+						model_overrides: [],
+						service_tier: "default",
+						thinking_level: "high",
 						timestamps: { created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
 						role_decision: {
-							decision_id: "dec-001", source: "fixed", selected_role_id: input.modelRole,
-							confidence: 1, candidates: [{ role_id: input.modelRole, reason: "fixed", confidence: 1 }],
+							decision_id: "dec-001",
+							source: "fixed",
+							selected_role_id: input.modelRole,
+							confidence: 1,
+							candidates: [{ role_id: input.modelRole, reason: "fixed", confidence: 1 }],
 							reasons: [`fixed role ${input.stageId}`],
 						},
 						contract_validation: { contract_version: "v1", passed: true, checks: [] },
 						model_binding: {
 							configured_selector: "anthropic/claude-sonnet-4-20250514",
-							provider: "anthropic", model_id: "claude-sonnet-4-20250514",
-							thinking_source: "configured", thinking_level: "high", binding_hash: "abc123",
+							provider: "anthropic",
+							model_id: "claude-sonnet-4-20250514",
+							thinking_source: "configured",
+							thinking_level: "high",
+							binding_hash: "abc123",
 						},
 						actual: {
-							provider: "anthropic", model_id: "claude-sonnet-4-20250514", thinking_level: "high",
-							exact_match: true, fallback_used: false, parent_model_used: false,
-							context_promotion_used: false, session_created: true,
+							provider: "anthropic",
+							model_id: "claude-sonnet-4-20250514",
+							thinking_level: "high",
+							exact_match: true,
+							fallback_used: false,
+							parent_model_used: false,
+							context_promotion_used: false,
+							session_created: true,
 						},
 						error: { code: "none", message: "" },
-					}) + "\n",
+					})}\n`,
 				);
 
 				return {
-					task_id: input.taskId, stage_id: input.stageId, role_id: input.modelRole,
-					schema_version: "v1", result: "completed" as const,
-					changed_files: [], tests_run: [], evidence: [], evidence_paths: [],
+					task_id: input.taskId,
+					stage_id: input.stageId,
+					role_id: input.modelRole,
+					schema_version: "v1",
+					result: "completed" as const,
+					changed_files: [],
+					tests_run: [],
+					evidence: [],
+					evidence_paths: [],
 					output_path: join(acceptingDir, "tasks", input.taskId, "stages", input.stageId, "output.json"),
-					execution_skills_used: [], final_tail_skills_used: [], scope_notes: [],
-					agentId: `${input.stageId}-agent`, modelRole: input.modelRole,
-					resolvedModel: "claude-opus-4", advisorFindings: [],
+					execution_skills_used: [],
+					final_tail_skills_used: [],
+					scope_notes: [],
+					agentId: `${input.stageId}-agent`,
+					modelRole: input.modelRole,
+					resolvedModel: "claude-opus-4",
+					advisorFindings: [],
 				};
 			},
 			reviewTask: async () => acceptedReview,
 			runMainAcceptance: async () => mainAcceptanceAccepted,
-			createRepairDecision: () => { throw new Error("should not be called"); },
+			createRepairDecision: () => {
+				throw new Error("should not be called");
+			},
 		};
 	}
 
 	it("writes V2 preflight evidence for all six stages", async () => {
 		const acceptingDir = await makeDir();
-		const result = await runPlanRunDriver({
-			acceptingDir, executionBook: frameworkBook, repoPath: "/repo",
-			project: "test-project", reindexProvider: null,
-			enableRoleBoundExecution: true,
-			strictStagePreflight: strictPreflight(),
-			superpowersSkillName: "test-driven-development", superpowersGateMode: "advisory",
-		}, makeDeps(acceptingDir));
+		const result = await runPlanRunDriver(
+			{
+				acceptingDir,
+				executionBook: frameworkBook,
+				repoPath: "/repo",
+				project: "test-project",
+				reindexProvider: null,
+				enableRoleBoundExecution: true,
+				strictStagePreflight: strictPreflight(),
+				superpowersSkillName: "test-driven-development",
+				superpowersGateMode: "advisory",
+			},
+			makeDeps(acceptingDir),
+		);
 
 		expect(result.state).toBe("ready_for_user");
 
-		const sixStageIds = ["tdd-writer", "implementer", "test-runner", "spec-reviewer", "quality-reviewer", "acceptance"];
+		const sixStageIds = [
+			"tdd-writer",
+			"implementer",
+			"test-runner",
+			"spec-reviewer",
+			"quality-reviewer",
+			"acceptance",
+		];
 		for (const stageId of sixStageIds) {
-			const content = JSON.parse(await readFile(
-				join(acceptingDir, "tasks", "T01", "stages", stageId, "model-routing-evidence.json"), "utf8",
-			));
+			const content = JSON.parse(
+				await readFile(
+					join(acceptingDir, "tasks", "T01", "stages", stageId, "model-routing-evidence.json"),
+					"utf8",
+				),
+			);
 			expect(content.schema_version).toBe(2);
 			expect(content.stage_id).toBe(stageId);
 		}
@@ -275,7 +406,7 @@ describe("PlanRunSubagentRunner adapter", () => {
 	it("blocks a stage whose V2 evidence remains preflighted", async () => {
 		const acceptingDir = await makeDir();
 		const deps = makeDeps(acceptingDir);
-		deps.spawnStage = async (input) => ({
+		deps.spawnStage = async input => ({
 			task_id: input.taskId,
 			stage_id: input.stageId,
 			role_id: input.modelRole,
@@ -292,18 +423,25 @@ describe("PlanRunSubagentRunner adapter", () => {
 		});
 		deps.createRepairDecision = () => ({}) as never;
 
-		const result = await runPlanRunDriver({
-			acceptingDir, executionBook: frameworkBook, repoPath: "/repo",
-			project: "test-project", reindexProvider: null,
-			enableRoleBoundExecution: true,
-			strictStagePreflight: strictPreflight(),
-			superpowersSkillName: "test-driven-development", superpowersGateMode: "advisory",
-		}, deps);
+		const result = await runPlanRunDriver(
+			{
+				acceptingDir,
+				executionBook: frameworkBook,
+				repoPath: "/repo",
+				project: "test-project",
+				reindexProvider: null,
+				enableRoleBoundExecution: true,
+				strictStagePreflight: strictPreflight(),
+				superpowersSkillName: "test-driven-development",
+				superpowersGateMode: "advisory",
+			},
+			deps,
+		);
 
 		expect(result.state).toBe("task_fix_required");
-		const outputContent = JSON.parse(await readFile(
-			join(acceptingDir, "tasks", "T01", "stages", "tdd-writer", "output.json"), "utf8",
-		));
+		const outputContent = JSON.parse(
+			await readFile(join(acceptingDir, "tasks", "T01", "stages", "tdd-writer", "output.json"), "utf8"),
+		);
 		expect(outputContent.result).toBe("blocked");
 	});
 });

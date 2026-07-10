@@ -16,8 +16,8 @@ import { runMainThreadAcceptanceReview } from "../codex-plan-run/main-acceptance
 import { runPlanRunEntry } from "../codex-plan-run/plan-run-entry";
 import type { PlanRunSubagentRunner, PlanRunTaskSpawnParams } from "../codex-plan-run/plan-run-spawn-adapter";
 import { createPlanRunProductionSpawnAdapter } from "../codex-plan-run/plan-run-spawn-adapter";
-import type { StrictRoleExecutionPlan } from "../codex-plan-run/role-bound-stage-scheduler";
 import { createPlanRunRepairDecision } from "../codex-plan-run/repair-loop";
+import type { StrictRoleExecutionPlan } from "../codex-plan-run/role-bound-stage-scheduler";
 import { reviewTaskExecution } from "../codex-plan-run/task-review";
 import { Settings, settings } from "../config/settings";
 import {
@@ -137,7 +137,9 @@ export function createCommandSubagentRunner(options: {
 
 	return {
 		run: async (params: PlanRunTaskSpawnParams): Promise<SpawnTaskOutput> =>
-			options.bridge ? mapBridgeResult(params, await options.bridge(toBridgeParams(params))) : blockedWithoutBridge(params),
+			options.bridge
+				? mapBridgeResult(params, await options.bridge(toBridgeParams(params)))
+				: blockedWithoutBridge(params),
 		runRoleBound: async (
 			params: PlanRunTaskSpawnParams,
 			context: { strictRoleExecutionPlan: StrictRoleExecutionPlan },

@@ -12,6 +12,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
@@ -19,12 +20,11 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
-import type { StrictRoleExecutionPlan } from "../../src/codex-plan-run/role-bound-stage-scheduler";
-import type { AgentProgress } from "../../src/task/types";
-import * as evidenceModule from "../../src/codex-plan-run/model-routing-evidence";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import * as evidenceModule from "../../src/codex-plan-run/model-routing-evidence";
+import type { StrictRoleExecutionPlan } from "../../src/codex-plan-run/role-bound-stage-scheduler";
 import * as modelResolver from "../../src/config/model-resolver";
+import type { AgentProgress } from "../../src/task/types";
 
 // ── Fixtures ─────────────────────────────────────────────────────
 
@@ -65,8 +65,6 @@ const baseAgent: AgentDefinition = {
 	source: "bundled",
 };
 
-
-
 /** Model fixture for a concrete, resolvable model. */
 const modelFixture = buildModel({
 	id: "claude-sonnet-4-20250514",
@@ -98,9 +96,7 @@ const baseOptions = {
 };
 
 /** Build a minimal StrictRoleExecutionPlan fixture with a given binding model. */
-function strictPlanFixture(
-	bindingModel: typeof modelFixture = modelFixture,
-): StrictRoleExecutionPlan {
+function strictPlanFixture(bindingModel: typeof modelFixture = modelFixture): StrictRoleExecutionPlan {
 	const roleId = "superpowers:implementer";
 	return {
 		decision: {
@@ -193,9 +189,7 @@ describe("runSubprocess strict role execution", () => {
 	it("bypasses auth/parent/retry fallback and passes binding.model to createAgentSession", async () => {
 		const session = createSilentSession();
 		const createSessionSpy = mockCreateAgentSession(session);
-		vi.spyOn(evidenceModule, "writeModelRoutingEvidenceV2").mockResolvedValue(
-			"/tmp/evidence.json",
-		);
+		vi.spyOn(evidenceModule, "writeModelRoutingEvidenceV2").mockResolvedValue("/tmp/evidence.json");
 		const fallbackSpy = vi.spyOn(modelResolver, "resolveModelOverrideWithAuthFallback");
 
 		const plan = strictPlanFixture();
@@ -260,9 +254,7 @@ describe("runSubprocess strict role execution", () => {
 	it("rejects with routing_evidence_write_failed before session creation when evidence writer fails", async () => {
 		const session = createSilentSession();
 		const createSessionSpy = mockCreateAgentSession(session);
-		vi.spyOn(evidenceModule, "writeModelRoutingEvidenceV2").mockRejectedValue(
-			new Error("disk full"),
-		);
+		vi.spyOn(evidenceModule, "writeModelRoutingEvidenceV2").mockRejectedValue(new Error("disk full"));
 
 		const plan = strictPlanFixture();
 
@@ -289,9 +281,7 @@ describe("runSubprocess strict role execution", () => {
 	it("surfaces validatedRoleId/configuredSelector/bindingHash/exactMatch in progress when strict execution plan is present", async () => {
 		const session = createSilentSession();
 		const createSessionSpy = mockCreateAgentSession(session);
-		vi.spyOn(evidenceModule, "writeModelRoutingEvidenceV2").mockResolvedValue(
-			"/tmp/evidence.json",
-		);
+		vi.spyOn(evidenceModule, "writeModelRoutingEvidenceV2").mockResolvedValue("/tmp/evidence.json");
 		const plan = strictPlanFixture();
 		const capturedProgresses: AgentProgress[] = [];
 
@@ -327,9 +317,7 @@ describe("runSubprocess strict role execution", () => {
 	it("omits binding-specific progress fields in normal (non-strict) execution", async () => {
 		const session = createSilentSession();
 		const createSessionSpy = mockCreateAgentSession(session);
-		vi.spyOn(evidenceModule, "writeModelRoutingEvidenceV2").mockResolvedValue(
-			"/tmp/evidence.json",
-		);
+		vi.spyOn(evidenceModule, "writeModelRoutingEvidenceV2").mockResolvedValue("/tmp/evidence.json");
 
 		const capturedProgresses: AgentProgress[] = [];
 
@@ -364,5 +352,4 @@ describe("runSubprocess strict role execution", () => {
 		expect(lastProgress?.bindingHash).toBeUndefined();
 		expect(lastProgress?.exactMatch).toBeUndefined();
 	});
-
 });

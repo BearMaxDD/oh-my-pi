@@ -106,11 +106,12 @@ export function resolveStrictRoleModelBinding(options: ResolveStrictRoleModelBin
 	if (!model) {
 		const routing = splitUpstreamRouting(configuredSelector);
 		const routedBase = routing ? parseExactModelSelector(routing.base) : undefined;
-		if (
-			routedBase &&
-			findExactAvailableModel(availableModels, routedBase.provider, routedBase.id)
-		) {
-			throw strictError("role_model_not_concrete", roleId, `Role ${roleId} must use an exact provider/model selector`);
+		if (routedBase && findExactAvailableModel(availableModels, routedBase.provider, routedBase.id)) {
+			throw strictError(
+				"role_model_not_concrete",
+				roleId,
+				`Role ${roleId} must use an exact provider/model selector`,
+			);
 		}
 		throw strictError(
 			"role_model_unavailable",

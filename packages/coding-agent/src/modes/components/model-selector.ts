@@ -26,6 +26,7 @@ import {
 	resolveModelRoleValue,
 	splitUpstreamRouting,
 } from "../../config/model-resolver";
+import type { ModelRoleBulkAssignmentRequest } from "../../config/model-role-assignment-service";
 import { getKnownRoleIds, getRoleInfo, MODEL_ROLE_IDS, MODEL_ROLES, type RoleInfo } from "../../config/model-roles";
 import type { ModelRoleBatchUpdateResult, Settings } from "../../config/settings";
 import { type ThemeColor, theme } from "../../modes/theme/theme";
@@ -39,11 +40,10 @@ import {
 import { getTabBarTheme } from "../shared";
 import { DynamicBorder } from "./dynamic-border";
 import {
+	type BulkAssignmentState,
 	bulkAssignmentReducer,
 	initialBulkAssignmentState,
-	type BulkAssignmentState,
 } from "./model-role-bulk-assignment";
-import type { ModelRoleBulkAssignmentRequest } from "../../config/model-role-assignment-service";
 
 function makeInvertedBadge(label: string, color: ThemeColor): string {
 	const fgAnsi = theme.getFgAnsi(color);
@@ -1417,7 +1417,7 @@ export class ModelSelectorComponent extends Container {
 
 	#saveBulkAssignment(): void {
 		const state = this.#bulkAssignmentState;
-		if (!state || state.step !== "saving") return;
+		if (state?.step !== "saving") return;
 		if (!this.#onBulkRoleSelect) {
 			this.#bulkAssignmentState = bulkAssignmentReducer(state, {
 				type: "SAVE_FAILURE",
@@ -1429,7 +1429,7 @@ export class ModelSelectorComponent extends Container {
 
 		const saveSuccess = () => {
 			const currentState = this.#bulkAssignmentState;
-			if (!currentState || currentState.step !== "saving") return;
+			if (currentState?.step !== "saving") return;
 			this.#bulkAssignmentState = bulkAssignmentReducer(currentState, { type: "SAVE_SUCCESS" });
 			this.#loadRoleModels();
 			this.#closeMenu();
@@ -1437,7 +1437,7 @@ export class ModelSelectorComponent extends Container {
 		};
 		const saveFailure = (error: unknown) => {
 			const currentState = this.#bulkAssignmentState;
-			if (!currentState || currentState.step !== "saving") return;
+			if (currentState?.step !== "saving") return;
 			this.#bulkAssignmentState = bulkAssignmentReducer(currentState, {
 				type: "SAVE_FAILURE",
 				error: error instanceof Error ? error.message : String(error),

@@ -267,8 +267,14 @@ describe("createCommandSubagentRunner", () => {
 	it("fails closed for a strict stage without a strict role-bound bridge", async () => {
 		const runner = createCommandSubagentRunner({ cwd: "/tmp/repo", acceptingDir: "/tmp/accept" });
 		const params: PlanRunTaskSpawnParams = {
-			agent: "task", id: "T1-implementer", role: "实现者", modelRole: "superpowers:implementer",
-			context: "Run ID: run-test", assignment: "Execute stage", description: "Implementer", required_skill_evidence: [],
+			agent: "task",
+			id: "T1-implementer",
+			role: "实现者",
+			modelRole: "superpowers:implementer",
+			context: "Run ID: run-test",
+			assignment: "Execute stage",
+			description: "Implementer",
+			required_skill_evidence: [],
 		};
 
 		expect(runner.runRoleBound).toBeDefined();
@@ -289,11 +295,19 @@ describe("createCommandSubagentRunner", () => {
 			return { exitCode: 0, outputPath: "/tmp/accept/tasks/T1/output.json", resolvedModel: "anthropic/claude" };
 		};
 		const runner = createCommandSubagentRunner({
-			cwd: "/tmp/repo", acceptingDir: "/tmp/accept", strictRoleBoundBridge: strictBridge,
+			cwd: "/tmp/repo",
+			acceptingDir: "/tmp/accept",
+			strictRoleBoundBridge: strictBridge,
 		});
 		const params: PlanRunTaskSpawnParams = {
-			agent: "task", id: "T1-implementer", role: "实现者", modelRole: "superpowers:implementer",
-			context: "Run ID: run-test", assignment: "Execute stage", description: "Implementer", required_skill_evidence: [],
+			agent: "task",
+			id: "T1-implementer",
+			role: "实现者",
+			modelRole: "superpowers:implementer",
+			context: "Run ID: run-test",
+			assignment: "Execute stage",
+			description: "Implementer",
+			required_skill_evidence: [],
 		};
 
 		const result = await runner.runRoleBound!(params, { strictRoleExecutionPlan: strictPlan });

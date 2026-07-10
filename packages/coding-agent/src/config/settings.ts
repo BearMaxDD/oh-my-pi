@@ -686,8 +686,7 @@ export class Settings {
 
 		try {
 			const write = await this.#saveModelRolesAtomic(normalized);
-			const modelRolesChangedDuringWrite =
-				getByPath(this.#global, ["modelRoles"]) !== write.modelRolesReference;
+			const modelRolesChangedDuringWrite = getByPath(this.#global, ["modelRoles"]) !== write.modelRolesReference;
 			const globalRoles = modelRolesChangedDuringWrite
 				? { ...this.#modelRolesFromLayer(this.#global), ...normalized }
 				: this.#modelRolesFromLayer(write.global);
@@ -780,9 +779,7 @@ export class Settings {
 			const modelRolesReference = getByPath(this.#global, ["modelRoles"]);
 			const current = await this.#loadYaml(configPath);
 			const currentRoles = this.#modelRolesFromLayer(current);
-			const pendingRoles = this.#modified.has("modelRoles")
-				? this.#modelRolesFromLayer(this.#global)
-				: undefined;
+			const pendingRoles = this.#modified.has("modelRoles") ? this.#modelRolesFromLayer(this.#global) : undefined;
 			const nextRoles = { ...(pendingRoles ?? currentRoles), ...assignments };
 			const changed =
 				Object.keys(currentRoles).length !== Object.keys(nextRoles).length ||

@@ -11,17 +11,17 @@
  * 7. ModelsCommand declares --check flag.
  */
 
-import { describe, expect, it, spyOn, type Mock } from "bun:test";
-import { runModelsCommand, resolveModelsArgs } from "../../src/cli/models-cli";
-import { Settings } from "../../src/config/settings";
-import { getKnownRoleIds, getRoleInfo } from "../../src/config/model-roles";
-import { ModelRegistry } from "../../src/config/model-registry";
-import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import type { Model } from "@oh-my-pi/pi-ai";
-import ModelsCommand from "../../src/commands/models";
-import { TempDir } from "@oh-my-pi/pi-utils";
-import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { describe, expect, it, type Mock, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
+import type { Model } from "@oh-my-pi/pi-ai";
+import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { resolveModelsArgs, runModelsCommand } from "../../src/cli/models-cli";
+import ModelsCommand from "../../src/commands/models";
+import { ModelRegistry } from "../../src/config/model-registry";
+import { getKnownRoleIds, getRoleInfo } from "../../src/config/model-roles";
+import { Settings } from "../../src/config/settings";
 
 function modelFixture(provider: string, id: string): Model {
 	return buildModel({
@@ -74,11 +74,17 @@ async function runModelsCommandForTest(args: {
 	const stderrChunks: string[] = [];
 	const origStdout = process.stdout.write.bind(process.stdout);
 	const origStderr = process.stderr.write.bind(process.stderr);
-	process.stdout.write = ((c: any) => { stdoutChunks.push(String(c)); return true; }) as typeof process.stdout.write;
-	process.stderr.write = ((c: any) => { stderrChunks.push(String(c)); return true; }) as typeof process.stderr.write;
+	process.stdout.write = ((c: any) => {
+		stdoutChunks.push(String(c));
+		return true;
+	}) as typeof process.stdout.write;
+	process.stderr.write = ((c: any) => {
+		stderrChunks.push(String(c));
+		return true;
+	}) as typeof process.stderr.write;
 	const origExitCode = process.exitCode;
 	process.exitCode = 0;
-	let thrown: unknown = undefined;
+	let thrown: unknown;
 	let exitCode: number;
 
 	try {
@@ -124,7 +130,9 @@ describe("roles --check exit code", () => {
 		// Currently entries.every checks ALL roles including default/tiny/title (non-subagent).
 		// RED until CLI filters to required-only entries before evaluating executability.
 		const parsed = JSON.parse(result.stdout);
-		const subagentRoles = parsed.entries.filter((e: any) => getRoleInfo(e.roleId, settings).canRunAsSubagent === true);
+		const subagentRoles = parsed.entries.filter(
+			(e: any) => getRoleInfo(e.roleId, settings).canRunAsSubagent === true,
+		);
 		expect(subagentRoles.every((e: any) => e.executable)).toBe(true);
 		expect(result.exitCode).toBe(0);
 	});
@@ -193,7 +201,12 @@ describe("roles --check exit code", () => {
 describe("roles --check --json output shape", () => {
 	it("emits parseable JSON with entries array", async () => {
 		const { settings, registry } = allValidFixture();
-		const result = await runModelsCommandForTest({ action: "roles", flags: { check: true, json: true }, settings, registry });
+		const result = await runModelsCommandForTest({
+			action: "roles",
+			flags: { check: true, json: true },
+			settings,
+			registry,
+		});
 		const parsed = JSON.parse(result.stdout);
 		expect(parsed).toHaveProperty("entries");
 		expect(Array.isArray(parsed.entries)).toBe(true);
@@ -201,7 +214,12 @@ describe("roles --check --json output shape", () => {
 
 	it("JSON entries have stable per-role keys", async () => {
 		const { settings, registry } = allValidFixture();
-		const result = await runModelsCommandForTest({ action: "roles", flags: { check: true, json: true }, settings, registry });
+		const result = await runModelsCommandForTest({
+			action: "roles",
+			flags: { check: true, json: true },
+			settings,
+			registry,
+		});
 		for (const e of JSON.parse(result.stdout).entries) {
 			expect(e).toHaveProperty("roleId");
 			expect(e).toHaveProperty("contractStatus");
@@ -212,7 +230,12 @@ describe("roles --check --json output shape", () => {
 
 	it("default --check without --json emits text", async () => {
 		const { settings, registry } = allValidFixture();
-		const result = await runModelsCommandForTest({ action: "roles", flags: { check: true, json: false }, settings, registry });
+		const result = await runModelsCommandForTest({
+			action: "roles",
+			flags: { check: true, json: false },
+			settings,
+			registry,
+		});
 		expect(() => JSON.parse(result.stdout)).toThrow();
 	});
 });
@@ -220,7 +243,12 @@ describe("roles --check --json output shape", () => {
 describe("roles without --check", () => {
 	it("sets exit code 1", async () => {
 		const { settings, registry } = allValidFixture();
-		const result = await runModelsCommandForTest({ action: "roles", flags: { check: false, json: false }, settings, registry });
+		const result = await runModelsCommandForTest({
+			action: "roles",
+			flags: { check: false, json: false },
+			settings,
+			registry,
+		});
 		expect(result.exitCode).toBe(1);
 	});
 });
@@ -479,7 +507,7 @@ describe("roles --check with extension-provided models", () => {
 
 	it("exits 2 on registry runtime operation failure (no throw, stderr diagnostic)", async () => {
 		const tmp = await TempDir.create("@roles-reg-");
-	let syncSpy: Mock<(activeSourceIds: string[]) => void> | undefined;
+		let syncSpy: Mock<(activeSourceIds: string[]) => void> | undefined;
 		try {
 			const extPath = await createExtensionFile(tmp);
 			const dbPath = tmp.join("auth.db");
@@ -492,7 +520,9 @@ describe("roles --check with extension-provided models", () => {
 				});
 				const modelRegistry = new ModelRegistry(authStorage);
 				syncSpy = spyOn(modelRegistry, "syncExtensionSources");
-				syncSpy.mockImplementation(() => { throw new Error("registry sync failed"); });
+				syncSpy.mockImplementation(() => {
+					throw new Error("registry sync failed");
+				});
 
 				const result = await runModelsCommandForTest({
 					action: "roles",

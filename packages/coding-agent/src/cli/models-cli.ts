@@ -15,9 +15,9 @@ import type { Api, Effort, Model } from "@oh-my-pi/pi-ai";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { ModelRegistry } from "../config/model-registry";
 import { getRoleInfo } from "../config/model-roles";
 import { auditStrictRoleBindings } from "../config/role-model-audit";
-import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { discoverAndLoadExtensions, loadExtensions } from "../extensibility/extensions";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
@@ -416,7 +416,9 @@ export async function runModelsCommand(
 					return;
 				}
 			} catch (error) {
-				process.stderr.write(`Failed to load extension providers: ${error instanceof Error ? error.message : String(error)}\n`);
+				process.stderr.write(
+					`Failed to load extension providers: ${error instanceof Error ? error.message : String(error)}\n`,
+				);
 				process.exitCode = 2;
 				return;
 			}
@@ -438,7 +440,9 @@ export async function runModelsCommand(
 		});
 	} catch (error) {
 		if (action !== ROLE_CHECK_ACTION) throw error;
-		process.stderr.write(`Failed to bootstrap role audit: ${error instanceof Error ? error.message : String(error)}\n`);
+		process.stderr.write(
+			`Failed to bootstrap role audit: ${error instanceof Error ? error.message : String(error)}\n`,
+		);
 		process.exitCode = 2;
 		return;
 	} finally {

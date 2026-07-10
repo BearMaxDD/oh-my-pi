@@ -210,12 +210,11 @@ export function parseExactModelSelector(
 
 	const parsed = parseModelString(normalized);
 	if (
-		!parsed ||
-		!parsed.provider ||
+		!parsed?.provider ||
 		!parsed.id ||
 		parsed.provider === "pi" ||
-		/[\s*?\[\]{},]/.test(parsed.provider) ||
-		/[\s*?\[\]{},]/.test(parsed.id)
+		/[\s*?[\]{},]/.test(parsed.provider) ||
+		/[\s*?[\]{},]/.test(parsed.id)
 	) {
 		return undefined;
 	}

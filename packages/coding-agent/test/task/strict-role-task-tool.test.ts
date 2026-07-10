@@ -17,27 +17,7 @@
 // RoleBoundExecutionContext is an internal TaskTool contract. Its type leaks
 // through src/index.ts `export type * from "./task/types"` and MUST be removed
 // from that wildcard before this code can compile without @ts-expect-error.
-// @ts-expect-error — RoleBoundExecutionContext is internal, not public API
-import type { RoleBoundExecutionContext } from "@oh-my-pi/pi-coding-agent";
-//
-// Task barrel subpath — the explicit re-export list at task/index.ts should
-// also exclude RoleBoundExecutionContext.
-// @ts-expect-error — should not be importable from the task barrel either
-import type { RoleBoundExecutionContext as _Barrel } from "@oh-my-pi/pi-coding-agent/task";
-//
-// The deeper subpath @oh-my-pi/pi-coding-agent/task/types is reachable via
-// package.json's `"./*"` export and task/types.ts still exports the type.
-// This sentinel is RED until RoleBoundExecutionContext moves out of types.ts
-// into a non-exported internal module (e.g. task/internal.ts).
-// @ts-expect-error — pending move out of task/types.ts
-import type { RoleBoundExecutionContext as _Types } from "@oh-my-pi/pi-coding-agent/task/types";
-//
-// StrictRoleExecutionPlan is a codex-plan-run scheduler detail. It is NOT
-// re-exported from the task types barrel, so this import correctly triggers
-// a compile error that @ts-expect-error suppresses. If it ever becomes
-// directly importable from the root, the directive becomes unused (RED).
-// @ts-expect-error — StrictRoleExecutionPlan is internal, not public API
-import type { StrictRoleExecutionPlan as _ } from "@oh-my-pi/pi-coding-agent";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
@@ -47,10 +27,16 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { StrictRoleExecutionPlan } from "../../src/codex-plan-run/role-bound-stage-scheduler";
-import * as modelRoutingModule from "../../src/task/model-routing";
+//
+// The deeper subpath @oh-my-pi/pi-coding-agent/task/types is reachable via
+// package.json's `"./*"` export and task/types.ts still exports the type.
+// This sentinel is RED until RoleBoundExecutionContext moves out of types.ts
+// into a non-exported internal module (e.g. task/internal.ts).
+// pending move out of task/types.ts
 import type { AgentDefinition, SingleResult, TaskParams } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import type { StrictRoleExecutionPlan } from "../../src/codex-plan-run/role-bound-stage-scheduler";
+import * as modelRoutingModule from "../../src/task/model-routing";
 
 const taskAgent: AgentDefinition = {
 	name: "task",
@@ -95,10 +81,7 @@ function makeResult(id: string, overrides: Partial<SingleResult> = {}): SingleRe
 }
 
 /** Minimal StrictRoleExecutionPlan fixture for contract verification. */
-function strictRoleExecutionPlanFixture(
-	roleId: string,
-	evidencePath: string,
-): StrictRoleExecutionPlan {
+function strictRoleExecutionPlanFixture(roleId: string, evidencePath: string): StrictRoleExecutionPlan {
 	return {
 		decision: {
 			source: "explicit_stage",
@@ -143,14 +126,12 @@ type TaskToolExecuteResult = ReturnType<TaskTool["execute"]>;
  * Type-level sketch of the executeRoleBound signature once implemented.
  * Used via unknown cast because the value is erased (RED phase).
  */
-interface ExecuteRoleBoundFn {
-	(
-		toolCallId: string,
-		params: TaskParams,
-		context: { strictRoleExecutionPlan: StrictRoleExecutionPlan },
-		signal?: AbortSignal,
-	): TaskToolExecuteResult;
-}
+type ExecuteRoleBoundFn = (
+	toolCallId: string,
+	params: TaskParams,
+	context: { strictRoleExecutionPlan: StrictRoleExecutionPlan },
+	signal?: AbortSignal,
+) => TaskToolExecuteResult;
 
 describe("executeRoleBound", () => {
 	beforeEach(() => {
@@ -211,9 +192,7 @@ describe("executeRoleBound", () => {
 		});
 
 		// Use flat (non-batch) schema so the sanity checks on public fields work.
-		const tool = await TaskTool.create(
-			createSession({ settings: { "task.batch": false } }),
-		);
+		const tool = await TaskTool.create(createSession({ settings: { "task.batch": false } }));
 		const properties = getSchemaProperties(tool);
 
 		// Internal binding fields must never appear in the public wire schema.
@@ -258,5 +237,4 @@ describe("executeRoleBound", () => {
 
 		expect(routingSpy).not.toHaveBeenCalled();
 	});
-
 });

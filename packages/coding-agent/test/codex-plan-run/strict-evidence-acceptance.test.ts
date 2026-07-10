@@ -1,36 +1,64 @@
 import { describe, expect, it } from "bun:test";
-import { validateModelRoutingEvidenceForAcceptance } from "../../src/codex-plan-run/model-routing-evidence";
 import type { ModelRoutingEvidenceV2 } from "../../src/codex-plan-run/model-routing-evidence";
+import { validateModelRoutingEvidenceForAcceptance } from "../../src/codex-plan-run/model-routing-evidence";
 
-const SIX_STAGES = ["tdd-writer", "implementer", "test-runner", "spec-reviewer", "quality-reviewer", "acceptance"] as const;
+const SIX_STAGES = [
+	"tdd-writer",
+	"implementer",
+	"test-runner",
+	"spec-reviewer",
+	"quality-reviewer",
+	"acceptance",
+] as const;
 
 function makeV2Evidence(stageId: string): ModelRoutingEvidenceV2 {
 	const now = new Date().toISOString();
 	return {
-		schema_version: 2, run_id: "test-run-001", task_id: "T01", stage_id: stageId,
-		status: "completed", agent_id: `agent-${stageId}`, model_role: `superpowers:${stageId}`,
-		requested_model: "anthropic/claude-sonnet-4", resolved_model: "anthropic/claude-sonnet-4-20250514",
-		fallback_roles: [], fallback_used: false, model_overrides: [],
-		service_tier: "default", thinking_level: "high",
+		schema_version: 2,
+		run_id: "test-run-001",
+		task_id: "T01",
+		stage_id: stageId,
+		status: "completed",
+		agent_id: `agent-${stageId}`,
+		model_role: `superpowers:${stageId}`,
+		requested_model: "anthropic/claude-sonnet-4",
+		resolved_model: "anthropic/claude-sonnet-4-20250514",
+		fallback_roles: [],
+		fallback_used: false,
+		model_overrides: [],
+		service_tier: "default",
+		thinking_level: "high",
 		timestamps: { created_at: now, updated_at: now },
 		role_decision: {
-			decision_id: "dec-001", source: "fixed", selected_role_id: `superpowers:${stageId}`,
-			confidence: 1.0, candidates: [{ role_id: `superpowers:${stageId}`, reason: "fixed", confidence: 1.0 }],
+			decision_id: "dec-001",
+			source: "fixed",
+			selected_role_id: `superpowers:${stageId}`,
+			confidence: 1.0,
+			candidates: [{ role_id: `superpowers:${stageId}`, reason: "fixed", confidence: 1.0 }],
 			reasons: [`fixed role ${stageId}`],
 		},
 		contract_validation: {
-			contract_version: "v1", passed: true,
+			contract_version: "v1",
+			passed: true,
 			checks: [{ code: "ROLE_CONTRACT", message: "pass", passed: true }],
 		},
 		model_binding: {
-			configured_selector: "anthropic/claude-sonnet-4", provider: "anthropic",
-			model_id: "claude-sonnet-4-20250514", thinking_source: "configured",
-			thinking_level: "high", binding_hash: "abc123",
+			configured_selector: "anthropic/claude-sonnet-4",
+			provider: "anthropic",
+			model_id: "claude-sonnet-4-20250514",
+			thinking_source: "configured",
+			thinking_level: "high",
+			binding_hash: "abc123",
 		},
 		actual: {
-			provider: "anthropic", model_id: "claude-sonnet-4-20250514", thinking_level: "high",
-			exact_match: true, fallback_used: false, parent_model_used: false,
-			context_promotion_used: false, session_created: true,
+			provider: "anthropic",
+			model_id: "claude-sonnet-4-20250514",
+			thinking_level: "high",
+			exact_match: true,
+			fallback_used: false,
+			parent_model_used: false,
+			context_promotion_used: false,
+			session_created: true,
 		},
 		error: { code: "none", message: "" },
 	};

@@ -10,12 +10,8 @@
  */
 
 import { describe, expect, it, vi } from "bun:test";
-import { Settings, type ModelRoleBatchUpdateResult } from "../../src/config/settings";
-import {
-	assignModelToRoles,
-	type ModelRoleBulkAssignmentRequest,
-	type AssignmentDependencies,
-} from "../../src/config/model-role-assignment-service";
+import { type AssignmentDependencies, assignModelToRoles } from "../../src/config/model-role-assignment-service";
+import { type ModelRoleBatchUpdateResult, Settings } from "../../src/config/settings";
 
 /** Settings fixture with a tracked atomic-assignment stub. */
 function mockDeps(

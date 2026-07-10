@@ -35,9 +35,7 @@ export interface ValidateRoleContractForTaskOptions {
 }
 
 function registeredRoleInfo(roleId: string): ModelRoleInfo | undefined {
-	return Object.prototype.hasOwnProperty.call(MODEL_ROLES, roleId)
-		? MODEL_ROLES[roleId as keyof typeof MODEL_ROLES]
-		: undefined;
+	return Object.hasOwn(MODEL_ROLES, roleId) ? MODEL_ROLES[roleId as keyof typeof MODEL_ROLES] : undefined;
 }
 
 function hasCompleteContract(roleInfo: ModelRoleInfo | undefined): boolean {
@@ -80,10 +78,12 @@ export function validateRoleContractForTask({
 			passed: !requirements.needsTestWrite || info?.canEditTestCode === true,
 		},
 		...(requirements.needsAcceptanceDecision
-			? [{
-				code: "capabilities_satisfied" as const,
-				passed: info?.capabilities?.includes("acceptance") === true,
-			}]
+			? [
+					{
+						code: "capabilities_satisfied" as const,
+						passed: info?.capabilities?.includes("acceptance") === true,
+					},
+				]
 			: []),
 		{
 			code: "readonly_compatible",

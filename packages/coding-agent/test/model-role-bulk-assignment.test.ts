@@ -17,11 +17,11 @@
 import { describe, expect, it } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import {
-	initialBulkAssignmentState,
-	bulkAssignmentReducer,
-	type BulkAssignmentState,
 	type BulkAssignmentAction,
 	type BulkAssignmentSelectorDetail,
+	type BulkAssignmentState,
+	bulkAssignmentReducer,
+	initialBulkAssignmentState,
 } from "../src/modes/components/model-role-bulk-assignment";
 
 // ---------------------------------------------------------------------------
@@ -34,10 +34,7 @@ function stateWith(overrides: Partial<BulkAssignmentState>): BulkAssignmentState
 	return { ...initialBulkAssignmentState, ...overrides };
 }
 
-function dispatch(
-	state: BulkAssignmentState,
-	action: BulkAssignmentAction,
-): BulkAssignmentState {
+function dispatch(state: BulkAssignmentState, action: BulkAssignmentAction): BulkAssignmentState {
 	return bulkAssignmentReducer(state, action);
 }
 
@@ -67,9 +64,7 @@ describe("thinking step — selector validation", () => {
 		});
 
 		expect(next.selector).toBe("fast-latest");
-		expect(next.notConcreteReason).toBe(
-			"Canonical selector does not pin a specific provider/model",
-		);
+		expect(next.notConcreteReason).toBe("Canonical selector does not pin a specific provider/model");
 		expect(next.canSave).toBe(false);
 	});
 
@@ -82,9 +77,7 @@ describe("thinking step — selector validation", () => {
 		});
 
 		expect(next.selector).toBe("anthropic/*");
-		expect(next.notConcreteReason).toBe(
-			"Glob patterns are not allowed for bulk role assignment",
-		);
+		expect(next.notConcreteReason).toBe("Glob patterns are not allowed for bulk role assignment");
 		expect(next.canSave).toBe(false);
 	});
 
@@ -97,9 +90,7 @@ describe("thinking step — selector validation", () => {
 		});
 
 		expect(next.selector).toBe("@default");
-		expect(next.notConcreteReason).toBe(
-			"Alias selectors are not allowed for bulk role assignment",
-		);
+		expect(next.notConcreteReason).toBe("Alias selectors are not allowed for bulk role assignment");
 		expect(next.canSave).toBe(false);
 	});
 
@@ -327,10 +318,10 @@ describe("roles step — role toggling", () => {
 	});
 
 	it("maintains other selected roles when toggling one off", () => {
-		const withTwo = dispatch(
-			dispatch(rolesState, { type: "TOGGLE_ROLE", roleId: "default" }),
-			{ type: "TOGGLE_ROLE", roleId: "vision" },
-		);
+		const withTwo = dispatch(dispatch(rolesState, { type: "TOGGLE_ROLE", roleId: "default" }), {
+			type: "TOGGLE_ROLE",
+			roleId: "vision",
+		});
 		expect([...withTwo.selectedRoleIds].sort()).toEqual(["default", "vision"]);
 
 		const next = dispatch(withTwo, { type: "TOGGLE_ROLE", roleId: "default" });
@@ -520,7 +511,12 @@ describe("SET_THINKING_LEVEL and SET_AVAILABLE_ROLES guards — no-ops outside t
 	});
 
 	it("SET_THINKING_LEVEL is a no-op in error step", () => {
-		const state: BulkAssignmentState = stateWith({ ...modelState, step: "error", errorMessage: "err", previewChanges: null });
+		const state: BulkAssignmentState = stateWith({
+			...modelState,
+			step: "error",
+			errorMessage: "err",
+			previewChanges: null,
+		});
 		const next = dispatch(state, { type: "SET_THINKING_LEVEL", thinkingLevel: ThinkingLevel.Low });
 		expect(next).toStrictEqual(state);
 	});
@@ -546,7 +542,12 @@ describe("SET_THINKING_LEVEL and SET_AVAILABLE_ROLES guards — no-ops outside t
 	});
 
 	it("SET_AVAILABLE_ROLES is a no-op in error step", () => {
-		const state: BulkAssignmentState = stateWith({ ...modelState, step: "error", errorMessage: "err", previewChanges: null });
+		const state: BulkAssignmentState = stateWith({
+			...modelState,
+			step: "error",
+			errorMessage: "err",
+			previewChanges: null,
+		});
 		const next = dispatch(state, { type: "SET_AVAILABLE_ROLES", roleIds: ["default", "smol"] });
 		expect(next).toStrictEqual(state);
 	});
@@ -854,7 +855,16 @@ describe("back→refresh→next→preview clears stale selected roles", () => {
 				availableRoleIds: ["default", "smol", "slow", "vision"],
 				selectedRoleIds: ["default", "vision"],
 			}),
-			{ type: "PREVIEW", changes: { changedRoleIds: ["default", "vision"], unchangedRoleIds: [], previous: {}, next: { default: "anthropic/claude-sonnet-4-20250514", vision: "anthropic/claude-sonnet-4-20250514" }, persisted: false } },
+			{
+				type: "PREVIEW",
+				changes: {
+					changedRoleIds: ["default", "vision"],
+					unchangedRoleIds: [],
+					previous: {},
+					next: { default: "anthropic/claude-sonnet-4-20250514", vision: "anthropic/claude-sonnet-4-20250514" },
+					persisted: false,
+				},
+			},
 		);
 		expect(afterPreview.step).toBe("preview");
 
@@ -876,7 +886,13 @@ describe("back→refresh→next→preview clears stale selected roles", () => {
 		// PREVIEW — stale "vision" removed, "smol" NOT auto-selected
 		const afterPreview2 = dispatch(afterNext, {
 			type: "PREVIEW",
-			changes: { changedRoleIds: ["default"], unchangedRoleIds: [], previous: { default: undefined }, next: { default: "anthropic/claude-sonnet-4-20250514" }, persisted: false },
+			changes: {
+				changedRoleIds: ["default"],
+				unchangedRoleIds: [],
+				previous: { default: undefined },
+				next: { default: "anthropic/claude-sonnet-4-20250514" },
+				persisted: false,
+			},
 		});
 		expect(afterPreview2.step).toBe("preview");
 		expect(afterPreview2.selectedRoleIds).toEqual(["default"]);

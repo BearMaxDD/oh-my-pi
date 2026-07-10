@@ -678,13 +678,13 @@ export type AgentSessionModelLock =
 			readonly strict_role: string;
 			readonly provider?: never;
 			readonly model_id?: never;
-		}
+	  }
 	| {
 			readonly strict_role: string;
 			/** Exact provider/model pair frozen by strict executor preflight. */
 			readonly provider: string;
 			readonly model_id: string;
-		};
+	  };
 
 export interface AgentSessionConfig {
 	agent: Agent;

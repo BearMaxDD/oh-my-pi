@@ -1,20 +1,20 @@
-import { beforeAll, afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { getKnownRoleIds } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import type { ModelRoleBatchUpdateResult } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ModelSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/model-selector";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
-import { initTheme, getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "@oh-my-pi/pi-coding-agent/thinking";
-import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { type Component, setKeybindings, type TUI } from "@oh-my-pi/pi-tui";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
-import { getKnownRoleIds } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 
 type TestSettings = ReturnType<typeof makeSettings>;
 
@@ -612,7 +612,6 @@ describe("ModelSelector role badge thinking display", () => {
 	});
 });
 
-
 describe("bulk assign to roles action", () => {
 	beforeAll(async () => {
 		testTheme = await getThemeByName("dark");
@@ -640,310 +639,288 @@ describe("bulk assign to roles action", () => {
 		} as unknown as ModelRegistry;
 	}
 
-	test(
-		'"Assign to roles..." is the first menu action for a concrete model',
-		async () => {
-			installTestTheme();
-			const model = createContextTestModel("gpt-4o", 128_000);
-			const settings = Settings.isolated({});
-			const onBulkRoleSelect = vi.fn();
-			const onSelect = vi.fn();
+	test('"Assign to roles..." is the first menu action for a concrete model', async () => {
+		installTestTheme();
+		const model = createContextTestModel("gpt-4o", 128_000);
+		const settings = Settings.isolated({});
+		const onBulkRoleSelect = vi.fn();
+		const onSelect = vi.fn();
 
-			const selector = new ModelSelectorComponent(
-				mockUI(),
-				undefined,
-				settings,
-				mockRegistry([model]),
-				[{ model }],
-				onSelect,
-				() => {},
-				{ onBulkRoleSelect },
-			);
-			installTestTheme();
+		const selector = new ModelSelectorComponent(
+			mockUI(),
+			undefined,
+			settings,
+			mockRegistry([model]),
+			[{ model }],
+			onSelect,
+			() => {},
+			{ onBulkRoleSelect },
+		);
+		installTestTheme();
 
-			selector.handleInput("\n"); // open menu
+		selector.handleInput("\n"); // open menu
 
-			const rendered = normalizeRenderedText(selector.render(220).join("\n"));
+		const rendered = normalizeRenderedText(selector.render(220).join("\n"));
 
-			// "Assign to roles..." must be present
-			expect(rendered).toContain("Assign to roles...");
+		// "Assign to roles..." must be present
+		expect(rendered).toContain("Assign to roles...");
 
-			// It must appear before any "Set as <role>" entries
-			const assignIndex = rendered.indexOf("Assign to roles...");
-			const setAsIndex = rendered.indexOf("Set as DEFAULT");
-			expect(assignIndex).toBeGreaterThanOrEqual(0);
-			expect(setAsIndex).toBeGreaterThan(assignIndex);
-		},
-	);
+		// It must appear before any "Set as <role>" entries
+		const assignIndex = rendered.indexOf("Assign to roles...");
+		const setAsIndex = rendered.indexOf("Set as DEFAULT");
+		expect(assignIndex).toBeGreaterThanOrEqual(0);
+		expect(setAsIndex).toBeGreaterThan(assignIndex);
+	});
 
-	test(
-		"keyboard navigation through bulk flow invokes onBulkRoleSelect exactly once at preview confirmation",
-		async () => {
-			installTestTheme();
-			const model = createContextTestModel("gpt-4o", 128_000);
-			const settings = Settings.isolated({});
-			const onBulkRoleSelect = vi.fn();
-			const onSelect = vi.fn();
+	test("keyboard navigation through bulk flow invokes onBulkRoleSelect exactly once at preview confirmation", async () => {
+		installTestTheme();
+		const model = createContextTestModel("gpt-4o", 128_000);
+		const settings = Settings.isolated({});
+		const onBulkRoleSelect = vi.fn();
+		const onSelect = vi.fn();
 
-			const selector = new ModelSelectorComponent(
-				mockUI(),
-				undefined,
-				settings,
-				mockRegistry([model]),
-				[{ model }],
-				onSelect,
-				() => {},
-				{ onBulkRoleSelect },
-			);
-			await Bun.sleep(0);
-			installTestTheme();
+		const selector = new ModelSelectorComponent(
+			mockUI(),
+			undefined,
+			settings,
+			mockRegistry([model]),
+			[{ model }],
+			onSelect,
+			() => {},
+			{ onBulkRoleSelect },
+		);
+		await Bun.sleep(0);
+		installTestTheme();
 
-			// Open menu → "Assign to roles..." → bulk flow
-			selector.handleInput("\n"); // open menu
-			selector.handleInput("\n"); // select "Assign to roles..." → bulk thinking step
+		// Open menu → "Assign to roles..." → bulk flow
+		selector.handleInput("\n"); // open menu
+		selector.handleInput("\n"); // select "Assign to roles..." → bulk thinking step
 
-			// After selecting "Assign to roles...": the bulk thinking step must be shown
-			const thinkingStep = normalizeRenderedText(selector.render(220).join("\n"));
-			expect(thinkingStep).toMatch(/(?:thinking|inherit|auto|off|low|medium|high|xhigh)/i);
+		// After selecting "Assign to roles...": the bulk thinking step must be shown
+		const thinkingStep = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(thinkingStep).toMatch(/(?:thinking|inherit|auto|off|low|medium|high|xhigh)/i);
 
-			selector.handleInput("\n"); // confirm thinking level → roles step
+		selector.handleInput("\n"); // confirm thinking level → roles step
 
-			// Roles step: must list available roles with "DEFAULT" as an option
-			const rolesStep = normalizeRenderedText(selector.render(220).join("\n"));
-			expect(rolesStep).toMatch(/(?:DEFAULT|default|role)/i);
+		// Roles step: must list available roles with "DEFAULT" as an option
+		const rolesStep = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(rolesStep).toMatch(/(?:DEFAULT|default|role)/i);
 
-			selector.handleInput(" "); // Space toggles DEFAULT role
+		selector.handleInput(" "); // Space toggles DEFAULT role
 
-			// After toggle: DEFAULT must appear as selected
-			const afterToggle = normalizeRenderedText(selector.render(220).join("\n"));
-			expect(afterToggle).toMatch(/(?:DEFAULT.*(?:selected|✓|✔|●)|●.*DEFAULT|selected.*DEFAULT)/i);
+		// After toggle: DEFAULT must appear as selected
+		const afterToggle = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(afterToggle).toMatch(/(?:DEFAULT.*(?:selected|✓|✔|●)|●.*DEFAULT|selected.*DEFAULT)/i);
 
-			selector.handleInput("\n"); // advance to preview
+		selector.handleInput("\n"); // advance to preview
 
-			// Preview step: shows DEFAULT in the change list
-			const previewStep = normalizeRenderedText(selector.render(220).join("\n"));
-			expect(previewStep).toContain("DEFAULT");
-			expect(previewStep).toMatch(/(?:change|preview|update)/i);
+		// Preview step: shows DEFAULT in the change list
+		const previewStep = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(previewStep).toContain("DEFAULT");
+		expect(previewStep).toMatch(/(?:change|preview|update)/i);
 
-			selector.handleInput("\n"); // confirm preview → callback fires once
+		selector.handleInput("\n"); // confirm preview → callback fires once
 
-			expect(onBulkRoleSelect).toHaveBeenCalledTimes(1);
-			expect(onBulkRoleSelect).toHaveBeenCalledWith(
-				expect.objectContaining({ selector: "test/gpt-4o" }),
-			);
-		},
-	);
+		expect(onBulkRoleSelect).toHaveBeenCalledTimes(1);
+		expect(onBulkRoleSelect).toHaveBeenCalledWith(expect.objectContaining({ selector: "test/gpt-4o" }));
+	});
 
-	test(
-		"non-concrete model shows 'Assign to roles...' disabled with explanatory block message",
-		async () => {
-			installTestTheme();
-			// An OpenRouter model with upstream routing is non-concrete for bulk
-			// assignment because assertConcreteSelector rejects
-			// openrouter/:id@upstream selectors.
-			const nonConcreteModel = buildModel({
-				id: "z-ai/glm-4.7@cerebras",
-				name: "GLM-4.7",
-				api: "openrouter-chat",
-				provider: "openrouter",
-				baseUrl: "https://openrouter.ai",
-				reasoning: true,
-				input: ["text"],
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				contextWindow: 1_000_000,
-				maxTokens: 8192,
-			});
-			const settings = Settings.isolated({});
-			const onBulkRoleSelect = vi.fn();
-			const onSelect = vi.fn();
+	test("non-concrete model shows 'Assign to roles...' disabled with explanatory block message", async () => {
+		installTestTheme();
+		// An OpenRouter model with upstream routing is non-concrete for bulk
+		// assignment because assertConcreteSelector rejects
+		// openrouter/:id@upstream selectors.
+		const nonConcreteModel = buildModel({
+			id: "z-ai/glm-4.7@cerebras",
+			name: "GLM-4.7",
+			api: "openrouter-chat",
+			provider: "openrouter",
+			baseUrl: "https://openrouter.ai",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_000_000,
+			maxTokens: 8192,
+		});
+		const settings = Settings.isolated({});
+		const onBulkRoleSelect = vi.fn();
+		const onSelect = vi.fn();
 
-			const selector = new ModelSelectorComponent(
-				mockUI(),
-				undefined,
-				settings,
-				mockRegistry([nonConcreteModel]),
-				[{ model: nonConcreteModel }],
-				onSelect,
-				() => {},
-				{ onBulkRoleSelect },
-			);
-			await Bun.sleep(0);
-			installTestTheme();
+		const selector = new ModelSelectorComponent(
+			mockUI(),
+			undefined,
+			settings,
+			mockRegistry([nonConcreteModel]),
+			[{ model: nonConcreteModel }],
+			onSelect,
+			() => {},
+			{ onBulkRoleSelect },
+		);
+		await Bun.sleep(0);
+		installTestTheme();
 
-			selector.handleInput("\n"); // open menu
+		selector.handleInput("\n"); // open menu
 
-			const rendered = normalizeRenderedText(selector.render(220).join("\n"));
+		const rendered = normalizeRenderedText(selector.render(220).join("\n"));
 
-			// "Assign to roles..." must still be present (always shown)
-			expect(rendered).toContain("Assign to roles...");
+		// "Assign to roles..." must still be present (always shown)
+		expect(rendered).toContain("Assign to roles...");
 
-			// But it must appear with a disabled/block message explaining that
-			// bulk assignment is not available for routed selectors
-			expect(rendered).toMatch(
-				/bulk.*(?:not.*(?:available|supported)|cannot|disabled|routed|upstream)/i,
-			);
+		// But it must appear with a disabled/block message explaining that
+		// bulk assignment is not available for routed selectors
+		expect(rendered).toMatch(/bulk.*(?:not.*(?:available|supported)|cannot|disabled|routed|upstream)/i);
 
-			// Attempting to select it must NOT invoke the callback
-			const onBulkRoleSelectBefore = onBulkRoleSelect.mock.calls.length;
-			selector.handleInput("\n"); // Enter with "Assign to roles..." highlighted
-			expect(onBulkRoleSelect).toHaveBeenCalledTimes(onBulkRoleSelectBefore);
-		},
-	);
+		// Attempting to select it must NOT invoke the callback
+		const onBulkRoleSelectBefore = onBulkRoleSelect.mock.calls.length;
+		selector.handleInput("\n"); // Enter with "Assign to roles..." highlighted
+		expect(onBulkRoleSelect).toHaveBeenCalledTimes(onBulkRoleSelectBefore);
+	});
 
-	test(
-		"selecting high thinking level persists ':high' suffix in callback selector",
-		async () => {
-			installTestTheme();
-			const model = getBundledModel("openai", "gpt-5.5");
-			if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
-			const settings = Settings.isolated({});
-			const onBulkRoleSelect = vi.fn();
-			const onSelect = vi.fn();
+	test("selecting high thinking level persists ':high' suffix in callback selector", async () => {
+		installTestTheme();
+		const model = getBundledModel("openai", "gpt-5.5");
+		if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
+		const settings = Settings.isolated({});
+		const onBulkRoleSelect = vi.fn();
+		const onSelect = vi.fn();
 
-			const selector = new ModelSelectorComponent(
-				mockUI(),
-				undefined,
-				settings,
-				mockRegistry([model]),
-				[{ model }],
-				onSelect,
-				() => {},
-				{ onBulkRoleSelect },
-			);
-			installTestTheme();
-			// Open menu → "Assign to roles..." → bulk thinking step
-			selector.handleInput("\n"); // open menu
-			expect(normalizeRenderedText(selector.render(220).join("\n"))).toContain("Assign to roles...");
-			selector.handleInput("\n"); // select "Assign to roles..."
+		const selector = new ModelSelectorComponent(
+			mockUI(),
+			undefined,
+			settings,
+			mockRegistry([model]),
+			[{ model }],
+			onSelect,
+			() => {},
+			{ onBulkRoleSelect },
+		);
+		installTestTheme();
+		// Open menu → "Assign to roles..." → bulk thinking step
+		selector.handleInput("\n"); // open menu
+		expect(normalizeRenderedText(selector.render(220).join("\n"))).toContain("Assign to roles...");
+		selector.handleInput("\n"); // select "Assign to roles..."
 
-			// Thinking options: Inherit(0) → Off(1) → auto(2) → low(3) → medium(4) → high(5) → xhigh(6)
-			// Navigate down 5 from index 0 to reach "high"
-			for (let i = 0; i < 5; i++) selector.handleInput("\x1b[B");
-			selector.handleInput("\n"); // confirm "high" thinking → roles step
+		// Thinking options: Inherit(0) → Off(1) → auto(2) → low(3) → medium(4) → high(5) → xhigh(6)
+		// Navigate down 5 from index 0 to reach "high"
+		for (let i = 0; i < 5; i++) selector.handleInput("\x1b[B");
+		selector.handleInput("\n"); // confirm "high" thinking → roles step
 
-			// Toggle role → advance to preview → confirm
-			selector.handleInput(" "); // Space toggles DEFAULT
-			selector.handleInput("\n"); // advance to preview
-			selector.handleInput("\n"); // confirm preview → callback fires
+		// Toggle role → advance to preview → confirm
+		selector.handleInput(" "); // Space toggles DEFAULT
+		selector.handleInput("\n"); // advance to preview
+		selector.handleInput("\n"); // confirm preview → callback fires
 
-			expect(onBulkRoleSelect).toHaveBeenCalledTimes(1);
-			expect(onBulkRoleSelect).toHaveBeenCalledWith(
-				expect.objectContaining({
-					selector: expect.stringMatching(/^openai\/gpt-5\.5:high$/),
-				}),
-			);
-		},
-	);
+		expect(onBulkRoleSelect).toHaveBeenCalledTimes(1);
+		expect(onBulkRoleSelect).toHaveBeenCalledWith(
+			expect.objectContaining({
+				selector: expect.stringMatching(/^openai\/gpt-5\.5:high$/),
+			}),
+		);
+	});
 
-	test(
-		"selecting auto thinking level must NOT append ':auto' suffix in callback selector",
-		async () => {
-			installTestTheme();
-			const model = getBundledModel("openai", "gpt-5.5");
-			if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
-			const settings = Settings.isolated({});
-			const onBulkRoleSelect = vi.fn();
-			const onSelect = vi.fn();
+	test("selecting auto thinking level must NOT append ':auto' suffix in callback selector", async () => {
+		installTestTheme();
+		const model = getBundledModel("openai", "gpt-5.5");
+		if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
+		const settings = Settings.isolated({});
+		const onBulkRoleSelect = vi.fn();
+		const onSelect = vi.fn();
 
-			const selector = new ModelSelectorComponent(
-				mockUI(),
-				undefined,
-				settings,
-				mockRegistry([model]),
-				[{ model }],
-				onSelect,
-				() => {},
-				{ onBulkRoleSelect },
-			);
-			installTestTheme();
+		const selector = new ModelSelectorComponent(
+			mockUI(),
+			undefined,
+			settings,
+			mockRegistry([model]),
+			[{ model }],
+			onSelect,
+			() => {},
+			{ onBulkRoleSelect },
+		);
+		installTestTheme();
 
-			// Open menu → "Assign to roles..." → bulk thinking step
-			selector.handleInput("\n"); // open menu
-			expect(normalizeRenderedText(selector.render(220).join("\n"))).toContain("Assign to roles...");
-			selector.handleInput("\n"); // select "Assign to roles..."
+		// Open menu → "Assign to roles..." → bulk thinking step
+		selector.handleInput("\n"); // open menu
+		expect(normalizeRenderedText(selector.render(220).join("\n"))).toContain("Assign to roles...");
+		selector.handleInput("\n"); // select "Assign to roles..."
 
-			// Thinking options: Inherit(0) → Off(1) → auto(2)
-			// Navigate down 2 from index 0 to reach "auto"
-			for (let i = 0; i < 2; i++) selector.handleInput("\x1b[B");
-			selector.handleInput("\n"); // confirm "auto" thinking → roles step
+		// Thinking options: Inherit(0) → Off(1) → auto(2)
+		// Navigate down 2 from index 0 to reach "auto"
+		for (let i = 0; i < 2; i++) selector.handleInput("\x1b[B");
+		selector.handleInput("\n"); // confirm "auto" thinking → roles step
 
-			// Toggle role → advance to preview → confirm
-			selector.handleInput(" "); // Space toggles DEFAULT
-			selector.handleInput("\n"); // advance to preview
-			selector.handleInput("\n"); // confirm preview → callback fires
+		// Toggle role → advance to preview → confirm
+		selector.handleInput(" "); // Space toggles DEFAULT
+		selector.handleInput("\n"); // advance to preview
+		selector.handleInput("\n"); // confirm preview → callback fires
 
-			expect(onBulkRoleSelect).toHaveBeenCalledTimes(1);
-			expect(onBulkRoleSelect).toHaveBeenCalledWith(
-				expect.objectContaining({
-					// Bare selector — no ":auto" suffix
-					selector: "openai/gpt-5.5",
-				}),
-			);
-		},
-	);
+		expect(onBulkRoleSelect).toHaveBeenCalledTimes(1);
+		expect(onBulkRoleSelect).toHaveBeenCalledWith(
+			expect.objectContaining({
+				// Bare selector — no ":auto" suffix
+				selector: "openai/gpt-5.5",
+			}),
+		);
+	});
 
-	test(
-		"known custom role custom-fast (without custom: prefix) appears in roles step and is accepted in callback",
-		async () => {
-			installTestTheme();
-			const model = getBundledModel("openai", "gpt-5.5");
-			if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
-			const settings = Settings.isolated({
-				modelRoles: {
-					"custom-fast": `${model.provider}/${model.id}`,
-				},
-			});
-			// Surface custom-fast as a known role via modelTags
-			settings.set("modelTags", { "custom-fast": { name: "custom-fast" } });
-			const onBulkRoleSelect = vi.fn();
-			const onSelect = vi.fn();
+	test("known custom role custom-fast (without custom: prefix) appears in roles step and is accepted in callback", async () => {
+		installTestTheme();
+		const model = getBundledModel("openai", "gpt-5.5");
+		if (!model) throw new Error("Expected bundled model openai/gpt-5.5");
+		const settings = Settings.isolated({
+			modelRoles: {
+				"custom-fast": `${model.provider}/${model.id}`,
+			},
+		});
+		// Surface custom-fast as a known role via modelTags
+		settings.set("modelTags", { "custom-fast": { name: "custom-fast" } });
+		const onBulkRoleSelect = vi.fn();
+		const onSelect = vi.fn();
 
-			const selector = new ModelSelectorComponent(
-				mockUI(),
-				undefined,
-				settings,
-				mockRegistry([model]),
-				[{ model }],
-				onSelect,
-				() => {},
-				{ onBulkRoleSelect },
-			);
-			installTestTheme();
+		const selector = new ModelSelectorComponent(
+			mockUI(),
+			undefined,
+			settings,
+			mockRegistry([model]),
+			[{ model }],
+			onSelect,
+			() => {},
+			{ onBulkRoleSelect },
+		);
+		installTestTheme();
 
-			// Open menu → "Assign to roles..."
-			selector.handleInput("\n"); // open menu
-			expect(normalizeRenderedText(selector.render(220).join("\n"))).toContain("Assign to roles...");
-			selector.handleInput("\n"); // select "Assign to roles..."
+		// Open menu → "Assign to roles..."
+		selector.handleInput("\n"); // open menu
+		expect(normalizeRenderedText(selector.render(220).join("\n"))).toContain("Assign to roles...");
+		selector.handleInput("\n"); // select "Assign to roles..."
 
-			// Confirm thinking → roles step
-			selector.handleInput("\n");
+		// Confirm thinking → roles step
+		selector.handleInput("\n");
 
-			// Roles step must list custom-fast
-			const rolesUI = normalizeRenderedText(selector.render(220).join("\n"));
-			expect(rolesUI).toMatch(/(?:custom-fast|custom_fast)/i);
+		// Roles step must list custom-fast
+		const rolesUI = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(rolesUI).toMatch(/(?:custom-fast|custom_fast)/i);
 
-			// Navigate to custom-fast in the role list using its known index
-			const customIndex = getKnownRoleIds(settings).indexOf("custom-fast");
-			expect(customIndex).toBeGreaterThanOrEqual(0);
-			for (let i = 0; i < customIndex; i++) selector.handleInput("\x1b[B");
-			selector.handleInput(" "); // Space toggles custom-fast
+		// Navigate to custom-fast in the role list using its known index
+		const customIndex = getKnownRoleIds(settings).indexOf("custom-fast");
+		expect(customIndex).toBeGreaterThanOrEqual(0);
+		for (let i = 0; i < customIndex; i++) selector.handleInput("\x1b[B");
+		selector.handleInput(" "); // Space toggles custom-fast
 
-			// Advance to preview → must show custom-fast
-			selector.handleInput("\n"); // advance to preview
-			const previewUI = normalizeRenderedText(selector.render(220).join("\n"));
-			expect(previewUI).toMatch(/(?:custom-fast|custom_fast)/i);
+		// Advance to preview → must show custom-fast
+		selector.handleInput("\n"); // advance to preview
+		const previewUI = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(previewUI).toMatch(/(?:custom-fast|custom_fast)/i);
 
-			// Confirm → callback fires with exactly roleIds: ["custom-fast"]
-			selector.handleInput("\n");
+		// Confirm → callback fires with exactly roleIds: ["custom-fast"]
+		selector.handleInput("\n");
 
-			expect(onBulkRoleSelect).toHaveBeenCalledTimes(1);
-			expect(onBulkRoleSelect).toHaveBeenCalledWith(
-				expect.objectContaining({
-					roleIds: ["custom-fast"],
-				}),
-			);
-		},
-	);
+		expect(onBulkRoleSelect).toHaveBeenCalledTimes(1);
+		expect(onBulkRoleSelect).toHaveBeenCalledWith(
+			expect.objectContaining({
+				roleIds: ["custom-fast"],
+			}),
+		);
+	});
 
 	describe("controller callback injection via showModelSelector", () => {
 		let settingsState: SettingsTestState | undefined;
@@ -962,12 +939,8 @@ describe("bulk assign to roles action", () => {
 			settingsState = undefined;
 		});
 
-
 		/** Shared minimal session mock for the controller test doubles. */
-		function makeSession(
-			model: Model,
-			modelRegistry: ModelRegistry,
-		): Record<string, unknown> {
+		function makeSession(model: Model, modelRegistry: ModelRegistry): Record<string, unknown> {
 			return {
 				model,
 				getContextUsage: () => ({ tokens: 0 }),
@@ -983,15 +956,15 @@ describe("bulk assign to roles action", () => {
 		}
 
 		/** Controller context mock. */
-		function makeCtx(
-			model: Model,
-			settings: Settings,
-			overrides: Record<string, unknown>,
-		): Record<string, unknown> {
+		function makeCtx(model: Model, settings: Settings, overrides: Record<string, unknown>): Record<string, unknown> {
 			const editorContainer = {
 				children: [] as Component[],
-				clear() { (this.children as Component[]).length = 0; },
-				addChild(child: Component) { (this.children as Component[]).push(child); },
+				clear() {
+					(this.children as Component[]).length = 0;
+				},
+				addChild(child: Component) {
+					(this.children as Component[]).push(child);
+				},
 			};
 			const modelRegistry = {
 				getAll: () => [model],
@@ -1026,133 +999,128 @@ describe("bulk assign to roles action", () => {
 
 		/** Extract the editorContainer from the context mock. */
 		function extractSelector(ctx: Record<string, unknown>): ModelSelectorComponent {
-			const container = (ctx as Record<string, unknown>)["editorContainer"] as { children: Component[] };
+			const container = (ctx as Record<string, unknown>).editorContainer as { children: Component[] };
 			const sel = container.children[0];
 			if (!(sel instanceof ModelSelectorComponent)) throw new Error("Expected ModelSelectorComponent");
 			return sel;
 		}
 
-		test(
-			"resolved persistence — role badge appears after controller saves via real setModelRolesAtomic",
-			async () => {
-				const model = createContextTestModel("gpt-4o", 128_000);
-				const settings = Settings.isolated({}); // no role assignments yet
+		test("resolved persistence — role badge appears after controller saves via real setModelRolesAtomic", async () => {
+			const model = createContextTestModel("gpt-4o", 128_000);
+			const settings = Settings.isolated({}); // no role assignments yet
 
-				// Gate + call-through: the spy lets the test control timing while still
-				// executing the real persistence so settings are actually updated.
-				const gate = Promise.withResolvers<ModelRoleBatchUpdateResult>();
-				const persistenceDone = Promise.withResolvers<void>();
-				const realAtomic = settings.setModelRolesAtomic.bind(settings);
-				vi.spyOn(settings, "setModelRolesAtomic").mockImplementation(
-					async (assignments) => {
-						await gate.promise;
-						const result = await realAtomic(assignments);
-						persistenceDone.resolve();
-						return result;
-					},
-				);
+			// Gate + call-through: the spy lets the test control timing while still
+			// executing the real persistence so settings are actually updated.
+			const gate = Promise.withResolvers<ModelRoleBatchUpdateResult>();
+			const persistenceDone = Promise.withResolvers<void>();
+			const realAtomic = settings.setModelRolesAtomic.bind(settings);
+			vi.spyOn(settings, "setModelRolesAtomic").mockImplementation(async assignments => {
+				await gate.promise;
+				const result = await realAtomic(assignments);
+				persistenceDone.resolve();
+				return result;
+			});
 
-				const showError = vi.fn();
-				const ctx = makeCtx(model, settings, { showError });
-				const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
-				controller.showModelSelector();
-				installTestTheme();
+			const showError = vi.fn();
+			const ctx = makeCtx(model, settings, { showError });
+			const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
+			controller.showModelSelector();
+			installTestTheme();
 
-				const selector = extractSelector(ctx);
+			const selector = extractSelector(ctx);
 
-				// Before bulk assignment: no DEFAULT badge
-				const before = normalizeRenderedText(selector.render(220).join("\n"));
-				expect(before).not.toContain("DEFAULT");
+			// Before bulk assignment: no DEFAULT badge
+			const before = normalizeRenderedText(selector.render(220).join("\n"));
+			expect(before).not.toContain("DEFAULT");
 
-				// Open menu → "Assign to roles..." → bulk flow
-				selector.handleInput("\n"); // open menu
-				expect(normalizeRenderedText(selector.render(220).join("\n"))).toContain("Assign to roles...");
-				selector.handleInput("\n"); // select "Assign to roles..." → bulk thinking step
-				expect(normalizeRenderedText(selector.render(220).join("\n"))).toMatch(/(?:thinking|inherit|auto|off|low|medium|high|xhigh)/i);
-				selector.handleInput("\n"); // confirm thinking level → roles step
-				expect(normalizeRenderedText(selector.render(220).join("\n"))).toMatch(/(?:DEFAULT|default|role)/i);
-				selector.handleInput(" "); // Space toggles DEFAULT role
-				expect(normalizeRenderedText(selector.render(220).join("\n"))).toMatch(/(?:DEFAULT.*(?:selected|✓|✔|●)|●.*DEFAULT|selected.*DEFAULT)/i);
-				selector.handleInput("\n"); // advance to preview
-				expect(normalizeRenderedText(selector.render(220).join("\n"))).toMatch(/(?:change|preview|update)/i);
-				selector.handleInput("\n"); // confirm preview → callback fires, suspended on gate
+			// Open menu → "Assign to roles..." → bulk flow
+			selector.handleInput("\n"); // open menu
+			expect(normalizeRenderedText(selector.render(220).join("\n"))).toContain("Assign to roles...");
+			selector.handleInput("\n"); // select "Assign to roles..." → bulk thinking step
+			expect(normalizeRenderedText(selector.render(220).join("\n"))).toMatch(
+				/(?:thinking|inherit|auto|off|low|medium|high|xhigh)/i,
+			);
+			selector.handleInput("\n"); // confirm thinking level → roles step
+			expect(normalizeRenderedText(selector.render(220).join("\n"))).toMatch(/(?:DEFAULT|default|role)/i);
+			selector.handleInput(" "); // Space toggles DEFAULT role
+			expect(normalizeRenderedText(selector.render(220).join("\n"))).toMatch(
+				/(?:DEFAULT.*(?:selected|✓|✔|●)|●.*DEFAULT|selected.*DEFAULT)/i,
+			);
+			selector.handleInput("\n"); // advance to preview
+			expect(normalizeRenderedText(selector.render(220).join("\n"))).toMatch(/(?:change|preview|update)/i);
+			selector.handleInput("\n"); // confirm preview → callback fires, suspended on gate
 
-				// Gate is still pending — controller hasn't surfaced anything
-				expect(showError).not.toHaveBeenCalled();
+			// Gate is still pending — controller hasn't surfaced anything
+			expect(showError).not.toHaveBeenCalled();
 
-				// Resolve the gate — realAtomic runs and updates settings
-				gate.resolve({
-					changedRoleIds: ["default"],
-					unchangedRoleIds: [],
-					previous: {},
-					next: { default: "test/gpt-4o" },
-					persisted: true,
-				});
-				// Wait for realAtomic to complete (precise signal from the spy)
-				await persistenceDone.promise;
-				// One yield for the callback's post-await continuation
-				await Promise.resolve();
-				// One more for component state/render
-				await Promise.resolve();
+			// Resolve the gate — realAtomic runs and updates settings
+			gate.resolve({
+				changedRoleIds: ["default"],
+				unchangedRoleIds: [],
+				previous: {},
+				next: { default: "test/gpt-4o" },
+				persisted: true,
+			});
+			// Wait for realAtomic to complete (precise signal from the spy)
+			await persistenceDone.promise;
+			// One yield for the callback's post-await continuation
+			await Promise.resolve();
+			// One more for component state/render
+			await Promise.resolve();
 
-				// After success: the component reads the updated settings and renders the badge
-				const after = normalizeRenderedText(selector.render(220).join("\n"));
-				expect(after).toContain("DEFAULT");
-				expect(showError).not.toHaveBeenCalled();
-			},
-		);
+			// After success: the component reads the updated settings and renders the badge
+			const after = normalizeRenderedText(selector.render(220).join("\n"));
+			expect(after).toContain("DEFAULT");
+			expect(showError).not.toHaveBeenCalled();
+		});
 
-		test(
-			"rejected persistence — selector shows error, no new badge, no controller showError",
-			async () => {
-				const model = createContextTestModel("gpt-4o", 128_000);
-				const settings = Settings.isolated({}); // no role assignments
+		test("rejected persistence — selector shows error, no new badge, no controller showError", async () => {
+			const model = createContextTestModel("gpt-4o", 128_000);
+			const settings = Settings.isolated({}); // no role assignments
 
-				const rejectBulk = Promise.withResolvers<ModelRoleBatchUpdateResult>();
-				vi.spyOn(settings, "setModelRolesAtomic").mockReturnValue(rejectBulk.promise);
+			const rejectBulk = Promise.withResolvers<ModelRoleBatchUpdateResult>();
+			vi.spyOn(settings, "setModelRolesAtomic").mockReturnValue(rejectBulk.promise);
 
-				const showError = vi.fn();
-				const ctx = makeCtx(model, settings, { showError });
-				const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
-				controller.showModelSelector();
-				installTestTheme();
+			const showError = vi.fn();
+			const ctx = makeCtx(model, settings, { showError });
+			const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
+			controller.showModelSelector();
+			installTestTheme();
 
-				const selector = extractSelector(ctx);
+			const selector = extractSelector(ctx);
 
-				// Before: no DEFAULT badge
-				expect(normalizeRenderedText(selector.render(220).join("\n"))).not.toContain("DEFAULT");
+			// Before: no DEFAULT badge
+			expect(normalizeRenderedText(selector.render(220).join("\n"))).not.toContain("DEFAULT");
 
-				// Open menu → "Assign to roles..." → bulk flow → confirm
-				selector.handleInput("\n"); // open menu
-				expect(normalizeRenderedText(selector.render(220).join("\n"))).toContain("Assign to roles...");
-				selector.handleInput("\n"); // select "Assign to roles..." → bulk thinking step
-				selector.handleInput("\n"); // confirm thinking level → roles step
-				selector.handleInput(" "); // Space toggles DEFAULT role
-				selector.handleInput("\n"); // advance to preview
-				selector.handleInput("\n"); // confirm preview → callback fires, suspended on gate
+			// Open menu → "Assign to roles..." → bulk flow → confirm
+			selector.handleInput("\n"); // open menu
+			expect(normalizeRenderedText(selector.render(220).join("\n"))).toContain("Assign to roles...");
+			selector.handleInput("\n"); // select "Assign to roles..." → bulk thinking step
+			selector.handleInput("\n"); // confirm thinking level → roles step
+			selector.handleInput(" "); // Space toggles DEFAULT role
+			selector.handleInput("\n"); // advance to preview
+			selector.handleInput("\n"); // confirm preview → callback fires, suspended on gate
 
-				// Reject the persistence
-				rejectBulk.reject(new Error("Persistence error: file write failed"));
-				await 0;
-				await 0;
-				await 0;
+			// Reject the persistence
+			rejectBulk.reject(new Error("Persistence error: file write failed"));
+			await 0;
+			await 0;
+			await 0;
 
-				// Controller must NOT surface showError — the bulk reducer handles it
-				expect(showError).not.toHaveBeenCalled();
+			// Controller must NOT surface showError — the bulk reducer handles it
+			expect(showError).not.toHaveBeenCalled();
 
-				// The rendered output must surface the error from the reducer's error step
-				const rendered = normalizeRenderedText(selector.render(220).join("\n"));
-				expect(rendered).toMatch(/(?:error|fail|could not|persistence)/i);
+			// The rendered output must surface the error from the reducer's error step
+			const rendered = normalizeRenderedText(selector.render(220).join("\n"));
+			expect(rendered).toMatch(/(?:error|fail|could not|persistence)/i);
 
-				// No new role badge appears (settings never updated)
-				expect(rendered).not.toContain("DEFAULT");
-			},
-		);
-
+			// No new role badge appears (settings never updated)
+			expect(rendered).not.toContain("DEFAULT");
+		});
 	});
 
 	/** Extract the editorContainer from the context object. */
 	function editorContainerFrom(ctx: Record<string, unknown>): { children: Component[] } {
-		return (ctx as Record<string, unknown>)["editorContainer"] as { children: Component[] };
+		return (ctx as Record<string, unknown>).editorContainer as { children: Component[] };
 	}
 });

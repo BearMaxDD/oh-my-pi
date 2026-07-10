@@ -1,7 +1,11 @@
 import { join } from "node:path";
 import type { RoleBoundStageRunOutput, SpawnTaskOutput } from "./driver";
 import type { PlanExecutionBook } from "./execution-book";
-import type { RoleBoundStageRunInput, StageOutputRef, UnplannedRoleBoundStageRunInput } from "./role-bound-stage-scheduler";
+import type {
+	RoleBoundStageRunInput,
+	StageOutputRef,
+	UnplannedRoleBoundStageRunInput,
+} from "./role-bound-stage-scheduler";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -118,7 +122,9 @@ function buildAssignment(
  * - description — human-readable stage label
  * - required_skill_evidence — populated from prompt pack required_outputs
  */
-export function buildPlanRunStageSpawnParams(input: UnplannedRoleBoundStageRunInput | RoleBoundStageRunInput): PlanRunTaskSpawnParams {
+export function buildPlanRunStageSpawnParams(
+	input: UnplannedRoleBoundStageRunInput | RoleBoundStageRunInput,
+): PlanRunTaskSpawnParams {
 	const role = input.promptPack.role_contract.zh_name;
 	const id = `${input.taskId}-${input.stageId}`;
 	const requiredArtifactPaths = input.promptPack.required_outputs.filter(o => o.required).map(o => o.artifact_path);
@@ -175,14 +181,15 @@ export function createPlanRunProductionSpawnAdapter(options: CreatePlanRunProduc
 		input: UnplannedRoleBoundStageRunInput | RoleBoundStageRunInput,
 	): Promise<RoleBoundStageRunOutput> => {
 		const params = buildPlanRunStageSpawnParams(input);
-		const output = "strictRoleExecutionPlan" in input
-			? await (() => {
-				if (!runner.runRoleBound) {
-					throw new Error("Strict PlanRun stage requires PlanRunSubagentRunner.runRoleBound");
-				}
-				return runner.runRoleBound(params, { strictRoleExecutionPlan: input.strictRoleExecutionPlan });
-			})()
-			: await runner.run(params);
+		const output =
+			"strictRoleExecutionPlan" in input
+				? await (() => {
+						if (!runner.runRoleBound) {
+							throw new Error("Strict PlanRun stage requires PlanRunSubagentRunner.runRoleBound");
+						}
+						return runner.runRoleBound(params, { strictRoleExecutionPlan: input.strictRoleExecutionPlan });
+					})()
+				: await runner.run(params);
 		// Shallow-safe copy so we never mutate the runner-owned object.
 		// advisorFindings is a nested array – copy it separately so .push
 		// on the copy's array doesn't affect the runner's array.

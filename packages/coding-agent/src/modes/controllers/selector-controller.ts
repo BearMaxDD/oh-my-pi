@@ -12,8 +12,8 @@ import {
 	resolveAdvisorConfigEditPath,
 	saveWatchdogConfigFile,
 } from "../../advisor";
-import { assignModelToRoles } from "../../config/model-role-assignment-service";
 import { formatModelSelectorValue, resolveAdvisorRoleSelection } from "../../config/model-resolver";
+import { assignModelToRoles } from "../../config/model-role-assignment-service";
 import { getRoleInfo } from "../../config/model-roles";
 import { settings } from "../../config/settings";
 import { disableProvider, enableProvider } from "../../discovery";
