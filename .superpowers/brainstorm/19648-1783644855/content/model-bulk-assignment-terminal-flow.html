@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OMP /model 批量分配流程</title>
+  <style>
+    :root{--bg:#10151b;--surface:#0b0f14;--line:#465463;--text:#d9e2ea;--dim:#8493a1;--accent:#63c6e8;--warn:#d7b36a;--ok:#6ed39c;--old:#d0848c}*{box-sizing:border-box}body{margin:0;padding:32px 20px;background:var(--bg);color:var(--text);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}.page{max-width:1120px;margin:auto}h1{font:600 22px/1.25 system-ui,sans-serif;margin:0 0 7px}.lead{font:14px/1.5 system-ui,sans-serif;color:#9ba9b7;margin:0 0 24px}.flow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:start}.stage{min-width:0}.stage-head{display:flex;align-items:center;gap:9px;margin:0 0 9px;color:#b8c5d1;font:13px/1.4 system-ui,sans-serif}.step{display:grid;place-items:center;width:22px;height:22px;background:#1d3742;border:1px solid #43758a;color:var(--accent);font:700 12px ui-monospace}.stage-head b{color:var(--text);font-size:14px}.terminal{background:var(--surface);border:1px solid #27323d;box-shadow:0 12px 30px #0005;padding:13px 14px;min-height:395px;overflow:hidden}.bar{height:1px;background:var(--line);margin-bottom:12px}.muted{color:var(--dim)}.hint{color:var(--warn);margin:0 0 12px;font-size:12px}.title{margin:6px 0 10px}.rule{height:1px;background:var(--line);margin:9px 0}.row{height:29px;display:flex;align-items:center;white-space:nowrap;overflow:hidden}.row.active{color:var(--accent)}.arrow{display:inline-block;width:21px;color:var(--accent)}.check{display:inline-block;width:27px;color:var(--accent)}.check.off{color:#6f7d8a}.role{overflow:hidden;text-overflow:ellipsis}.current{color:var(--dim);margin-left:auto;overflow:hidden;text-overflow:ellipsis;padding-left:8px}.menu-help{font-size:12px;color:var(--dim);margin-top:10px}.bulk{color:var(--accent);background:#142731;border-left:2px solid var(--accent);padding-left:7px;margin-left:-7px}.count{color:var(--ok);border:1px solid #3b8765;background:#142a21;padding:4px 6px;margin:5px 0 9px;font-size:12px}.search{border:1px solid #526271;color:#c8d1db;padding:5px 7px;margin:7px 0 10px;font-size:12px}.search i{color:var(--accent);font-style:normal}.change{font-size:12px;height:28px;display:flex;gap:5px;align-items:center;white-space:nowrap}.change .from{color:var(--old);overflow:hidden;text-overflow:ellipsis}.change .to{color:var(--ok);overflow:hidden;text-overflow:ellipsis}.confirm{margin-top:13px;color:var(--ok);font-weight:700}.result{margin-top:14px;padding:8px;background:#142a21;border-left:2px solid var(--ok);color:var(--ok);font-size:12px}.principles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:22px;font:13px/1.5 system-ui,sans-serif}.principle{border:1px solid #2a3744;background:#151d25;padding:11px;color:#a9b8c6}.principle b{display:block;color:#e5edf5;margin-bottom:3px;font-size:12px}@media(max-width:900px){.flow{grid-template-columns:1fr}.terminal{min-height:0}.principles{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <h1>方案 A：从现有 `Action for` 延伸的批量分配</h1>
+    <p class="lead">模型列表、Tab、搜索、角色徽标和原来的“Set as &lt;role&gt;”均保留。只有在主动选择批量分配时，才进入下面两步。</p>
+    <section class="flow">
+      <article class="stage">
+        <div class="stage-head"><span class="step">1</span><div><b>选择批量入口</b><br>模型已选中，原菜单仍可做单角色操作</div></div>
+        <div class="terminal">
+          <div class="bar"></div>
+          <div class="title">Action for: <b>gpt-5.3-codex</b></div><div class="rule"></div>
+          <div class="row active bulk"><span class="arrow">›</span>Assign to roles...</div>
+          <div class="row"><span class="arrow"></span>Set as Default</div>
+          <div class="row"><span class="arrow"></span>Set as Advisor</div>
+          <div class="row"><span class="arrow"></span>Set as Developer</div>
+          <div class="row"><span class="arrow"></span>Set as Reviewer</div>
+          <div class="menu-help">Enter: continue&nbsp;&nbsp; Esc: cancel</div><div class="rule"></div>
+          <p class="hint" style="margin-top:14px">原有单角色项位置不变；批量入口固定在第一项。</p>
+        </div>
+      </article>
+      <article class="stage">
+        <div class="stage-head"><span class="step">2</span><div><b>多选目标角色</b><br>不隐藏当前配置，选择范围始终可见</div></div>
+        <div class="terminal">
+          <div class="bar"></div>
+          <div class="title">Assign <b>gpt-5.3-codex</b> to roles</div>
+          <div class="count">3 roles selected</div>
+          <div class="search"><i>›</i> Filter roles...</div>
+          <div class="row active"><span class="check">[x]</span><span class="role">Developer</span><span class="current">gpt-5.2</span></div>
+          <div class="row"><span class="check">[x]</span><span class="role">Reviewer</span><span class="current">claude-opus-4.6</span></div>
+          <div class="row"><span class="check">[x]</span><span class="role">Test Engineer</span><span class="current">gpt-5.2</span></div>
+          <div class="row"><span class="check off">[ ]</span><span class="role">Advisor</span><span class="current">gpt-5.2</span></div>
+          <div class="row"><span class="check off">[ ]</span><span class="role">Researcher</span><span class="current">gemini-3-pro</span></div>
+          <div class="menu-help">Space: select&nbsp;&nbsp; ↑↓: move&nbsp;&nbsp; Enter: review&nbsp;&nbsp; Esc: back</div><div class="rule"></div>
+        </div>
+      </article>
+      <article class="stage">
+        <div class="stage-head"><span class="step">3</span><div><b>确认并反馈</b><br>先展示覆盖面，再提交所有变更</div></div>
+        <div class="terminal">
+          <div class="bar"></div>
+          <div class="title">Confirm role assignments</div><div class="rule"></div>
+          <div class="muted">Model: <b style="color:var(--text)">gpt-5.3-codex</b></div>
+          <p class="muted" style="margin:10px 0 5px">3 role settings will be updated:</p>
+          <div class="change">Developer: <span class="from">gpt-5.2</span> → <span class="to">gpt-5.3-codex</span></div>
+          <div class="change">Reviewer: <span class="from">claude-opus-4.6</span> → <span class="to">gpt-5.3-codex</span></div>
+          <div class="change">Test Engineer: <span class="from">gpt-5.2</span> → <span class="to">gpt-5.3-codex</span></div>
+          <div class="confirm">› Apply 3 assignments</div>
+          <div class="menu-help">Enter: apply&nbsp;&nbsp; Esc: back</div><div class="rule"></div>
+          <div class="result">Assigned gpt-5.3-codex to 3 roles.</div>
+        </div>
+      </article>
+    </section>
+    <section class="principles"><div class="principle"><b>排版</b>模型名、角色名、当前值各占固定列，窄屏自动截断，避免徽标和长模型名把菜单撑乱。</div><div class="principle"><b>安全</b>多选不立即写配置；确认屏精确列出每一个覆盖项，Esc 可原路返回而不产生变更。</div><div class="principle"><b>部署</b>只扩展现有 `ModelSelectorComponent` 与 Settings 写入路径，不引入 Web 服务、额外依赖或新的配置文件。</div></section>
+  </main>
+</body>
+</html>

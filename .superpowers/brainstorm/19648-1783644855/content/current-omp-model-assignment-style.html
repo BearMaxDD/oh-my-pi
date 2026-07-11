@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OMP /model 当前分配样式</title>
+  <style>
+    :root { --canvas:#11161c; --terminal:#0d1117; --text:#d5dde6; --dim:#7f8b99; --border:#44515f; --accent:#68c5e6; --warning:#d6b06d; --green:#72c795; --purple:#a991e6; --red:#ec8992; }
+    *{box-sizing:border-box} body{margin:0;background:var(--canvas);color:var(--text);font:15px/1.48 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;padding:34px 20px}.page{max-width:920px;margin:auto}h1{font:600 21px/1.3 system-ui,sans-serif;margin:0 0 8px}.lead{color:#9daab8;margin:0 0 24px;font:14px/1.5 system-ui,sans-serif}.note{border-left:3px solid var(--accent);padding:9px 12px;color:#b7c3cf;background:#172029;margin:0 0 20px;font:13px/1.5 system-ui,sans-serif}.terminal{background:var(--terminal);border:1px solid #26313c;box-shadow:0 18px 50px #0007;padding:16px 20px 18px;min-height:610px}.line{height:1px;background:var(--border);margin:0 -4px 15px}.hint{color:var(--warning);margin:0 0 16px}.tabs{margin:0 0 14px;white-space:nowrap;overflow:hidden}.tabs b{font-weight:400;color:var(--accent);border-bottom:2px solid var(--accent);padding:0 9px 7px 0;margin-right:11px}.tabs span{color:var(--dim);margin-right:13px}.search{border:1px solid #526271;color:#c8d1db;padding:6px 10px;margin:0 0 13px}.search .cursor{color:var(--accent)}.list{min-height:225px}.row{display:flex;gap:0;height:30px;align-items:center;white-space:pre}.row.active{color:var(--accent)}.nav{width:23px;color:var(--accent)}.provider{color:#8996a4}.row.active .provider{color:#91a5b6}.model{color:var(--text)}.row.active .model{color:var(--accent)}.badge{font-size:12px;margin-left:9px;padding:0 4px;border:1px solid}.default{color:#81afe6;border-color:#547cac}.dev{color:var(--green);border-color:#4d9d71}.review{color:#d6b06d;border-color:#a67f3e}.advisor{color:var(--purple);border-color:#7563a7}.detail{margin-top:13px;color:var(--dim)}.detail b{color:#bfcbd7;font-weight:400}.menu{width:min(100%,525px);margin:25px 0 0 24px;color:var(--text)}.menu-line{height:1px;background:var(--border)}.menu-title{padding:7px 2px 11px}.menu-row{height:29px;padding-left:4px;color:var(--dim)}.menu-row.active{color:var(--accent)}.menu-row .arrow{color:var(--accent);display:inline-block;width:24px}.menu-hint{color:var(--dim);padding:10px 2px 7px;font-size:13px}.legend{margin:24px 0 0;color:#a6b4c1;font:13px/1.55 system-ui,sans-serif;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.legend span{background:#171f28;padding:9px 10px;border:1px solid #293745}.legend b{display:block;color:#d9e3ec;font-size:12px;margin-bottom:2px}@media(max-width:600px){body{padding:18px 10px}.terminal{padding:13px;font-size:12px;min-height:auto}.badge{margin-left:4px;font-size:10px}.legend{grid-template-columns:1fr}.menu{margin-left:8px}.tabs span{margin-right:7px}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <h1>OMP 当前 `/model` 分配样式</h1>
+    <p class="lead">依据现有 `ModelSelectorComponent` 的实际渲染顺序：动态边框、提示、Models Tab、搜索、模型列表、详情，以及 Enter 触发的角色动作菜单。</p>
+    <p class="note">这张屏幕是“现状基线”。它展示当前单模型分配角色的路径，不加入新的双栏或管理台结构。</p>
+    <section class="terminal" aria-label="OMP model selector mock">
+      <div class="line"></div>
+      <p class="hint">Only showing models with configured API keys (see README for details)</p>
+      <div class="tabs"><b>Models</b><span>All</span><span>OpenAI</span><span>Anthropic</span><span>Google</span></div>
+      <div class="search"><span class="cursor">›</span> Search models...</div>
+      <div class="list">
+        <div class="row active"><span class="nav">›</span><span class="provider">openai/</span><span class="model">gpt-5.3-codex</span><span class="badge default">default</span><span class="badge dev">developer</span></div>
+        <div class="row"><span class="nav"></span><span class="provider">openai/</span><span class="model">gpt-5.2</span><span class="badge advisor">advisor</span></div>
+        <div class="row"><span class="nav"></span><span class="provider">anthropic/</span><span class="model">claude-opus-4.6</span><span class="badge review">reviewer</span></div>
+        <div class="row"><span class="nav"></span><span class="provider">google/</span><span class="model">gemini-3-pro</span></div>
+        <div class="row"><span class="nav"></span><span class="provider">openai/</span><span class="model">o4-mini</span></div>
+        <div class="row"><span class="nav"></span><span class="provider">anthropic/</span><span class="model">claude-sonnet-4.5</span></div>
+      </div>
+      <div class="detail">Model Name: <b>GPT-5.3 Codex</b></div>
+      <section class="menu">
+        <div class="menu-line"></div>
+        <div class="menu-title">Action for: <b>gpt-5.3-codex</b></div>
+        <div class="menu-row active"><span class="arrow">›</span>Set as Default</div>
+        <div class="menu-row"><span class="arrow"></span>Set as Advisor</div>
+        <div class="menu-row"><span class="arrow"></span>Set as Developer</div>
+        <div class="menu-row"><span class="arrow"></span>Set as Reviewer</div>
+        <div class="menu-row"><span class="arrow"></span>Set as Researcher</div>
+        <div class="menu-hint">Enter: continue  Esc: cancel</div>
+        <div class="menu-line"></div>
+      </section>
+      <div class="line" style="margin-top:17px;margin-bottom:0"></div>
+    </section>
+    <div class="legend"><span><b>当前分配</b>每次 Enter 只选择一个角色。</span><span><b>角色来源</b>内置角色和 Settings 的自定义角色一起进入菜单。</span><span><b>保持不变</b>模型 Tab、搜索、徽标、滚动和上下键操作均可原样保留。</span></div>
+  </main>
+</body>
+</html>

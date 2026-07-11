@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>OMP 路由错误与证据设计</title>
+<style>
+:root{--bg:#10151b;--panel:#161e26;--deep:#0e141a;--line:#344452;--text:#e4ecf3;--muted:#95a4b2;--cyan:#61c6e8;--green:#70d09c;--amber:#deb45f;--red:#e5868d}*{box-sizing:border-box}body{margin:0;padding:30px 20px;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}.page{max-width:1200px;margin:auto}h1{font-size:23px;margin:0 0 7px}.lead{color:var(--muted);margin:0 0 22px}.twophase{display:grid;grid-template-columns:1fr 70px 1fr;align-items:stretch;margin-bottom:18px}.phase{background:var(--panel);border:1px solid var(--line);padding:15px}.phase h2{font-size:15px;margin:0 0 9px}.phase.pre h2{color:var(--cyan)}.phase.actual h2{color:var(--green)}.phase ul{margin:0;padding-left:18px;color:#b8c5d1;font-size:12px}.arrow{display:grid;place-items:center;color:var(--amber);font:700 22px ui-monospace}.schema{background:var(--deep);border-left:3px solid var(--cyan);margin-top:12px;padding:9px 10px;color:#aebfcd;font:11px/1.6 ui-monospace;white-space:pre-wrap}.errors{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.error{background:var(--panel);border:1px solid var(--line);padding:13px}.error-head{display:flex;gap:8px;align-items:center;margin-bottom:7px}.code{color:var(--red);background:#25171a;border:1px solid #6f4248;padding:2px 5px;font:11px ui-monospace}.error b{font-size:13px}.error p{margin:4px 0;color:var(--muted);font-size:12px}.cli{background:var(--deep);padding:8px 9px;margin-top:8px;color:#c7d2dc;font:11px/1.5 ui-monospace}.cli strong{color:var(--amber)}.policy{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:17px}.rule{background:var(--panel);border-top:2px solid var(--green);padding:11px;color:#adbdca;font-size:12px}.rule b{display:block;color:var(--text);margin-bottom:3px}.path{margin-top:17px;border:1px solid #4f603b;background:#182016;padding:12px 14px;font:12px/1.55 ui-monospace;color:#b9c8b2}.path strong{color:var(--green)}@media(max-width:800px){.twophase{grid-template-columns:1fr}.arrow{height:45px;transform:rotate(90deg)}.errors{grid-template-columns:1fr}.policy{grid-template-columns:1fr}}
+</style></head><body><main class="page">
+<h1>失败即阻止，证据可证明</h1><p class="lead">错误必须告诉用户该去 `/model` 修什么；证据必须证明“配置模型、解析模型、实际模型”一致，而不只是记录一个 resolved_model 字符串。</p>
+<section class="twophase">
+ <article class="phase pre"><h2>阶段 A：Spawn 前预检证据</h2><ul><li>任务候选角色、得分和选择来源</li><li>通过校验的 validated_role_id</li><li>settings.modelRoles 中的原始选择器</li><li>规范化后的 provider/model/thinking</li><li>契约检查与 execution_allowed</li></ul><div class="schema">decision_source: explicit | rules | advisor
+validated_role_id: "superpowers:developer"
+configured_selector: "openai/gpt-5.3-codex:high"
+preflight_status: "passed"</div></article>
+ <div class="arrow">→</div>
+ <article class="phase actual"><h2>阶段 B：Spawn 实际参数证据</h2><ul><li>实际请求的 provider/model/thinking</li><li>与配置模型的 canonical exact_match</li><li>Agent ID、Task ID、Stage ID</li><li>执行是否启动及阻止原因</li><li>证据文件内容摘要，防止后续漂移</li></ul><div class="schema">actual_provider: "openai"
+actual_model: "gpt-5.3-codex"
+actual_thinking: "high"
+exact_match: true
+execution_started: true</div></article>
+</section>
+<section class="errors">
+ <article class="error"><div class="error-head"><span class="code">role_model_unconfigured</span><b>角色没有模型绑定</b></div><p>停止在模型解析前，不使用默认模型。</p><div class="cli"><strong>Cannot start Developer.</strong><br>No model is assigned. Run /model → select a model → Assign to Developer.</div></article>
+ <article class="error"><div class="error-head"><span class="code">role_model_unavailable</span><b>绑定模型当前不可用</b></div><p>模型未注册、无认证或已被 provider 移除，均不自动替换。</p><div class="cli"><strong>Configured model unavailable:</strong><br>openai/gpt-5.3-codex. Update this role in /model.</div></article>
+ <article class="error"><div class="error-head"><span class="code">role_model_mismatch</span><b>实际参数与配置不一致</b></div><p>视为内部完整性错误，阻止 Spawn，并同时输出 expected 与 actual。</p><div class="cli"><strong>Routing integrity check failed.</strong><br>expected=openai/gpt-5.3-codex actual=openai/gpt-5.2</div></article>
+ <article class="error"><div class="error-head"><span class="code">ambiguous_role</span><b>任务角色无法准确确定</b></div><p>Advisor 仲裁仍无可靠结论时停止，不能用 developer 或 default 猜测。</p><div class="cli"><strong>Role selection is ambiguous.</strong><br>Top candidates: Developer 0.61, Reviewer 0.57. Specify a role or refine the task.</div></article>
+ <article class="error"><div class="error-head"><span class="code">role_contract_mismatch</span><b>角色没有任务所需权限</b></div><p>即使显式指定，也不能绕过 readOnly、生产代码和测试代码约束。</p><div class="cli"><strong>Researcher cannot edit production code.</strong><br>Select a compatible role or change the task scope.</div></article>
+ <article class="error"><div class="error-head"><span class="code">routing_evidence_write_failed</span><b>预检证据无法持久化</b></div><p>无法建立可审计证明时不进入 Spawn；原始任务保持未执行。</p><div class="cli"><strong>Routing preflight was not persisted.</strong><br>Task execution has been blocked.</div></article>
+</section>
+<section class="policy"><div class="rule"><b>不自动重试到其他模型</b>认证、限流或模型缺失都返回原错误。</div><div class="rule"><b>允许返回 `/model` 修复后重试</b>重新执行时重新读取最新角色绑定。</div><div class="rule"><b>不记录密钥</b>证据只包含角色、模型身份、决策信号和摘要。</div></section>
+<div class="path"><strong>证据位置：</strong> accepting/tasks/&lt;task_id&gt;/model-routing-evidence.json<br><strong>验收条件：</strong> role-bound task 必须同时满足 configured_selector != null、exact_match === true、execution_started === true。</div>
+</main></body></html>

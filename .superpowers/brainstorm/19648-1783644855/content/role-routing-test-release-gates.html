@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>OMP 路由测试与发布门</title>
+<style>
+:root{--bg:#10151b;--panel:#161e26;--deep:#0f151b;--line:#344452;--text:#e5edf4;--muted:#95a4b2;--cyan:#61c6e8;--green:#70d09c;--amber:#deb45f;--red:#e5868d;--purple:#ac95e5}*{box-sizing:border-box}body{margin:0;padding:30px 20px;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}.page{max-width:1200px;margin:auto}h1{font-size:23px;margin:0 0 7px}.lead{color:var(--muted);margin:0 0 22px}.levels{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}.level{background:var(--panel);border:1px solid var(--line);padding:14px}.level:nth-child(1){border-top:3px solid var(--cyan)}.level:nth-child(2){border-top:3px solid var(--amber)}.level:nth-child(3){border-top:3px solid var(--purple)}.level h2{font-size:15px;margin:0 0 9px}.level ul{padding-left:18px;margin:0;color:#b4c2ce;font-size:12px}.level li{margin:5px 0}.matrix{margin-top:17px;background:var(--panel);border:1px solid var(--line);padding:15px}.matrix h2,.release h2{font-size:15px;margin:0 0 11px}.table{display:grid;grid-template-columns:1.2fr .9fr .9fr .65fr;font-size:12px}.cell{padding:8px 9px;border-top:1px solid #293642;color:#aebdca}.head{border-top:0;background:var(--deep);color:var(--text);font-weight:700}.pass{color:var(--green)}.block{color:var(--red)}.release{margin-top:17px;background:var(--panel);border:1px solid var(--line);padding:15px}.gates{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.gate{background:var(--deep);padding:10px;border-left:2px solid var(--green)}.gate b{display:block;font:12px ui-monospace;color:var(--green);margin-bottom:3px}.gate span{color:var(--muted);font-size:11px}.migration{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:15px}.migration div{border:1px solid #344452;padding:10px;color:#aebdca;font-size:12px}.migration b{display:block;color:var(--amber);font-size:12px;margin-bottom:4px}.accept{margin-top:16px;border:1px solid #4f633d;background:#192117;padding:13px 15px;color:#c0ceb9;font:12px/1.65 ui-monospace}.accept strong{color:var(--green)}.stop{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}.stop span{border:1px solid #704249;background:#25171a;color:#e99aa0;padding:5px 8px;font:11px ui-monospace}@media(max-width:800px){.levels{grid-template-columns:1fr}.table{grid-template-columns:1fr 1fr}.table .cell:nth-child(4n+3),.table .cell:nth-child(4n+4){display:none}.gates,.migration{grid-template-columns:1fr}}
+</style></head><body><main class="page">
+<h1>测试矩阵、迁移检查与发布验收</h1><p class="lead">发布不是“测试跑过”就结束，而是必须证明批量配置、任务选角、模型精确绑定和 Spawn 参数在真实链路中闭环。</p>
+<section class="levels">
+ <article class="level"><h2>1. 单元测试</h2><ul><li>候选角色评分、阈值与 Top-2 分差</li><li>Role Contract 能力和权限校验</li><li>配置选择器 canonicalize</li><li>provider/model/thinking 精确比较</li><li>禁止 fallback、override 和 session 继承</li></ul></article>
+ <article class="level"><h2>2. 组件与集成测试</h2><ul><li>`Assign to roles...` 多选与返回</li><li>一次确认写入多个 modelRoles</li><li>失败不产生部分写入</li><li>重新打开 `/model` 徽标一致</li><li>Settings → resolver → evidence 数据一致</li></ul></article>
+ <article class="level"><h2>3. Spawn 契约测试</h2><ul><li>模拟真实 TaskTool Spawn 参数</li><li>断言实际模型等于角色绑定</li><li>错配注入必须在 Spawn 前阻止</li><li>证据写入失败不得执行</li><li>成功证据 exact_match 必须为 true</li></ul></article>
+</section>
+<section class="matrix"><h2>核心验收用例</h2><div class="table">
+ <div class="cell head">场景</div><div class="cell head">期望角色</div><div class="cell head">期望模型</div><div class="cell head">结果</div>
+ <div class="cell">前端实现任务，高置信度</div><div class="cell">Developer</div><div class="cell">/model[Developer]</div><div class="cell pass">执行</div>
+ <div class="cell">审查任务，显式 Reviewer</div><div class="cell">Reviewer</div><div class="cell">/model[Reviewer]</div><div class="cell pass">执行</div>
+ <div class="cell">Developer 未配置模型</div><div class="cell">Developer</div><div class="cell">null</div><div class="cell block">阻止</div>
+ <div class="cell">绑定模型没有认证</div><div class="cell">Developer</div><div class="cell">configured exact</div><div class="cell block">阻止</div>
+ <div class="cell">注入不同 actual model</div><div class="cell">Developer</div><div class="cell">mismatch</div><div class="cell block">阻止</div>
+ <div class="cell">角色候选分数接近</div><div class="cell">Advisor 仲裁</div><div class="cell">仲裁角色绑定</div><div class="cell pass">条件执行</div>
+ <div class="cell">批量配置 3 个角色</div><div class="cell">逐角色冻结</div><div class="cell">各自 /model 值</div><div class="cell pass">逐项精确</div>
+ </div></section>
+<section class="release"><h2>发布门</h2><div class="gates"><div class="gate"><b>bun run check</b><span>格式、文档索引、类型全部通过</span></div><div class="gate"><b>bun run test</b><span>全量 coding-agent-heavy 测试通过</span></div><div class="gate"><b>bun run build</b><span>CLI 二进制构建成功</span></div><div class="gate"><b>bun run prepack</b><span>发布包生成与回滚脚本正常</span></div></div>
+ <div class="migration"><div><b>配置审计</b>启动前枚举已知角色，列出未配置、不可解析和不可用的模型。</div><div><b>用户修复</b>不自动改写旧配置；要求通过 `/model` 重新选择，得到明确 provider/model。</div><div><b>严格生效</b>Role-bound Task 一律强校验，不提供关闭 strict 的兼容开关。</div></div>
+ <div class="stop"><span>禁止 wildcard 配置进入严格链路</span><span>禁止部分批量写入</span><span>禁止模型错配后继续执行</span><span>禁止缺证据验收</span></div>
+</section>
+<div class="accept"><strong>最终验收：</strong>在至少 12 个任务夹具 × 所有可执行角色的矩阵中，角色选择符合预期；每个已执行任务的 configured_selector、resolved_model、actual_model 完全一致；所有负向错配用例在 Spawn 前被阻止；全量 check/test/build/prepack 通过。</div>
+</main></body></html>

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>OMP 精准角色与模型绑定架构 V2</title>
+  <style>
+    :root{--bg:#10151b;--panel:#161d25;--deep:#10161c;--line:#344351;--text:#e5edf4;--muted:#96a5b3;--cyan:#62c7e9;--green:#70d19d;--amber:#e2b75e;--red:#e3868d;--purple:#aa94e4}*{box-sizing:border-box}body{margin:0;padding:30px 20px;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif}.page{max-width:1280px;margin:auto}h1{font-size:24px;margin:0 0 7px}.lead{margin:0 0 23px;color:var(--muted)}.source{display:flex;align-items:center;gap:10px;border:1px solid #3c6c7e;background:#12232b;padding:13px 15px;margin-bottom:16px}.source b{color:var(--cyan)}.source code{margin-left:auto;color:#bde5f2;font:12px ui-monospace;background:#0b151a;padding:5px 8px}.pipeline{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px}.node{position:relative;min-height:180px;background:var(--panel);border:1px solid var(--line);padding:13px 12px}.node:after{content:"→";position:absolute;right:-11px;top:72px;color:var(--cyan);background:var(--bg);z-index:2;font:700 17px ui-monospace}.node:last-child:after{display:none}.n{font:700 11px ui-monospace;color:var(--cyan)}.node h2{font-size:14px;margin:5px 0 7px}.node p{font-size:12px;color:var(--muted);margin:0}.token{display:block;margin-top:10px;border-left:2px solid var(--cyan);background:var(--deep);padding:5px 6px;color:#bac8d4;font:11px/1.4 ui-monospace}.bind{border-color:#71623c}.bind .n,.bind h2{color:var(--amber)}.bind .token{border-color:var(--amber)}.assert{border-color:#407655}.assert .n,.assert h2{color:var(--green)}.assert .token{border-color:var(--green)}.run{border-color:#65538e}.run .n,.run h2{color:var(--purple)}.run .token{border-color:var(--purple)}.invariant{margin-top:18px;border:1px solid #5c6d3b;background:#192016;padding:14px 16px;font:13px/1.55 ui-monospace}.invariant strong{color:var(--green)}.matrix{display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:16px}.box{background:var(--panel);border:1px solid var(--line);padding:15px}.box h3{font-size:14px;margin:0 0 11px}.row{display:grid;grid-template-columns:155px 1fr;gap:9px;border-top:1px solid #283440;padding:8px 0;font-size:12px}.row:first-of-type{border-top:0}.row code{color:var(--cyan);font:11px ui-monospace}.row span{color:var(--muted)}.block{color:var(--red)!important}.removed{margin-top:16px;display:flex;gap:9px;flex-wrap:wrap}.removed span{border:1px solid #76434a;background:#25171a;color:#e99aa0;padding:6px 8px;font:12px ui-monospace}.anchors{margin-top:17px;color:var(--muted);font-size:12px}.anchors code{color:#c2d0dc;background:var(--deep);padding:2px 5px}@media(max-width:1100px){.pipeline{grid-template-columns:repeat(4,1fr)}.node:nth-child(4):after{display:none}}@media(max-width:720px){body{padding:20px 10px}.pipeline{grid-template-columns:1fr}.node:after{display:none}.matrix{grid-template-columns:1fr}.source{display:block}.source code{display:block;margin:8px 0 0}}
+  </style>
+</head>
+<body><main class="page">
+  <h1>任务 → 正确角色 → `/model` 指定模型</h1>
+  <p class="lead">模型分配以 `/model` 写入的角色配置为唯一事实源。角色选定后不再计算“推荐模型”，也不允许使用其他角色、Agent Override 或当前会话模型替代。</p>
+  <section class="source"><b>唯一模型来源</b><span>用户通过 `/model` 为角色选择 provider、model 和 thinking level</span><code>settings.modelRoles[validated_role_id]</code></section>
+  <section class="pipeline">
+    <article class="node"><span class="n">01 TASK</span><h2>归一化任务</h2><p>提取目标、文件范围、验收条件、运行面与显式角色。</p><span class="token">task_evidence</span></article>
+    <article class="node"><span class="n">02 ROLE</span><h2>确定正确角色</h2><p>规则候选、高置信度直达；歧义任务由 Advisor 仲裁。</p><span class="token">candidate_roles[]</span></article>
+    <article class="node"><span class="n">03 CONTRACT</span><h2>角色契约校验</h2><p>能力、读写权限、阶段与 Advisor 要求全部匹配。</p><span class="token">validated_role_id</span></article>
+    <article class="node bind"><span class="n">04 BINDING</span><h2>读取 `/model` 绑定</h2><p>只调用 getModelRole(validatedRoleId)，缺失立即阻止。</p><span class="token">configured_selector</span></article>
+    <article class="node bind"><span class="n">05 EXACT RESOLVE</span><h2>精确解析模型</h2><p>解析 provider/model/thinking；不可用、歧义或通配命中均不执行。</p><span class="token">canonical_model_id</span></article>
+    <article class="node assert"><span class="n">06 ASSERT</span><h2>Spawn 前一致性断言</h2><p>配置选择器、解析模型和实际请求参数必须完全一致。</p><span class="token">exact_match = true</span></article>
+    <article class="node run"><span class="n">07 RUN</span><h2>执行并记录证据</h2><p>携带已冻结角色与模型启动子代理，记录全链路来源。</p><span class="token">routing_evidence</span></article>
+  </section>
+  <div class="invariant"><strong>强不变量：</strong>actual_model.provider/model/thinking === canonicalize(settings.modelRoles[validated_role_id])。任何不相等都返回错误，不进入 TaskTool Spawn。</div>
+  <section class="matrix">
+    <article class="box"><h3>允许的结果</h3>
+      <div class="row"><code>configured_exact</code><span>角色绑定存在，精确模型已注册且认证可用，正常执行。</span></div>
+      <div class="row"><code>explicit_role_exact</code><span>用户显式指定角色，契约通过后仍只执行该角色在 `/model` 中绑定的模型。</span></div>
+      <div class="row"><code>bulk_assigned_exact</code><span>批量分配写入多个角色后，每个角色各自读取同一个明确选择器。</span></div>
+    </article>
+    <article class="box"><h3>必须阻止的结果</h3>
+      <div class="row"><code class="block">role_model_unconfigured</code><span>提示先用 `/model` 为该角色分配模型。</span></div>
+      <div class="row"><code class="block">role_model_unavailable</code><span>绑定模型不存在、未认证或不可用，不寻找替代模型。</span></div>
+      <div class="row"><code class="block">role_model_mismatch</code><span>Spawn 即将使用的模型与配置不一致，立即中止并输出两边值。</span></div>
+    </article>
+  </section>
+  <div class="removed"><span>移除 role-bound fallbackModelRoles</span><span>忽略 agentModelOverrides</span><span>禁止继承 active session model</span><span>禁止通配符命中其他模型</span><span>禁止静默 default</span></div>
+  <p class="anchors">代码落点：<code>Settings.getModelRole</code> 读取唯一绑定；<code>resolveTaskModelRouting</code> 增加 strict role-bound 分支；<code>TaskTool.#runSpawn</code> 执行一致性断言；<code>createModelRoutingEvidence</code> 记录 configured / resolved / actual 三元组。</p>
+</main></body>
+</html>

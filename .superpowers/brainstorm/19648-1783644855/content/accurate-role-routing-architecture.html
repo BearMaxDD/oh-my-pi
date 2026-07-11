@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OMP 精准角色路由架构</title>
+  <style>
+    :root{--bg:#10151b;--panel:#161d25;--panel2:#11171d;--line:#344351;--text:#e2eaf1;--muted:#94a3b1;--cyan:#61c6e8;--green:#70d19d;--amber:#e0b660;--red:#e4838b;--purple:#ad95e8}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:30px 20px}.page{max-width:1280px;margin:auto}h1{margin:0 0 7px;font-size:24px;letter-spacing:0}.lead{margin:0 0 24px;color:var(--muted)}.pipeline{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;position:relative}.node{position:relative;min-height:174px;border:1px solid var(--line);background:var(--panel);padding:14px 13px}.node:after{content:"→";position:absolute;right:-12px;top:70px;color:var(--cyan);background:var(--bg);z-index:2;padding:0 2px;font:700 18px ui-monospace}.node:last-child:after{display:none}.num{color:var(--cyan);font:700 11px ui-monospace;text-transform:uppercase}.node h2{margin:5px 0 8px;font-size:15px}.node p{margin:0;color:var(--muted);font-size:12px}.tag{display:block;margin-top:9px;padding:4px 6px;background:var(--panel2);border-left:2px solid var(--cyan);color:#b8c6d3;font:11px/1.4 ui-monospace}.gate{border-color:#657343}.gate .num,.gate h2{color:var(--green)}.gate .tag{border-color:var(--green)}.resolver{border-color:#79683e}.resolver .num,.resolver h2{color:var(--amber)}.resolver .tag{border-color:var(--amber)}.assert{border-color:#704a6e}.assert .num,.assert h2{color:var(--purple)}.assert .tag{border-color:var(--purple)}.details{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;margin-top:20px}.box{background:var(--panel);border:1px solid var(--line);padding:16px}.box h3{font-size:14px;margin:0 0 12px}.decision{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.decision div{background:var(--panel2);border-left:3px solid var(--cyan);padding:10px}.decision div:nth-child(2){border-color:var(--amber)}.decision div:nth-child(3){border-color:var(--red)}.decision b{display:block;font-size:12px;margin-bottom:3px}.decision span{color:var(--muted);font-size:12px}.checks{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.check{background:var(--panel2);padding:8px 9px;color:#b9c7d3;font-size:12px}.check b{color:var(--green);margin-right:5px}.policy{margin-top:16px;border:1px solid #3a4a58;background:#121920;padding:14px 16px;font:13px/1.55 ui-monospace;color:#b8c5d1}.policy strong{color:var(--amber)}.rejects{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.reject{border:1px solid #75434a;color:#e79ba1;background:#24171a;padding:5px 8px;font:12px ui-monospace}.anchors{margin-top:18px;color:var(--muted);font-size:12px}.anchors code{color:#b9c9d8;background:#11171d;padding:2px 5px}@media(max-width:1050px){.pipeline{grid-template-columns:repeat(3,1fr)}.node:nth-child(3):after{display:none}.details{grid-template-columns:1fr}}@media(max-width:650px){body{padding:20px 10px}.pipeline{grid-template-columns:1fr}.node:after{display:none}.decision{grid-template-columns:1fr}.checks{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <h1>任务 → 正确角色 → 正确模型</h1>
+    <p class="lead">角色一旦通过契约校验便保持不可变；模型不可用时只能在该角色允许的模型候选中回退，不能静默切换成另一个角色。</p>
+    <section class="pipeline">
+      <article class="node"><span class="num">01 Input</span><h2>任务证据归一化</h2><p>收集 title、todo、文件范围、验收条件、运行面和用户显式角色。</p><span class="tag">TaskExecutionCard<br>explicit_role?</span></article>
+      <article class="node"><span class="num">02 Classify</span><h2>候选角色评分</h2><p>规则与代码面信号共同生成 Top-K，不在这里直接决定最终角色。</p><span class="tag">role_id + score<br>signals[]</span></article>
+      <article class="node"><span class="num">03 Decide</span><h2>确定或仲裁</h2><p>高置信度直接采用；分差不足或语义模糊时交给 Advisor 仲裁。</p><span class="tag">decision_source<br>confidence + alternatives</span></article>
+      <article class="node gate"><span class="num">04 Gate</span><h2>角色契约强校验</h2><p>核对能力、读写权限、阶段约束和 Advisor 要求，不通过即停止。</p><span class="tag">validated_role_id<br>contract_version</span></article>
+      <article class="node resolver"><span class="num">05 Resolve</span><h2>严格模型解析</h2><p>读取该角色在 `/model` 中的绑定；回退模型必须仍满足同一角色契约。</p><span class="tag">requested_model<br>resolved_model</span></article>
+      <article class="node assert"><span class="num">06 Execute</span><h2>Spawn 前断言</h2><p>角色、模型、Prompt Pack 和权限四者一致后才允许创建子代理。</p><span class="tag">routing_evidence<br>execution_allowed</span></article>
+    </section>
+
+    <section class="details">
+      <article class="box"><h3>角色决策策略</h3><div class="decision">
+        <div><b>显式角色</b><span>最高优先级，但仍必须经过契约校验；非法显式角色不能绕过权限。</span></div>
+        <div><b>高置信度</b><span>Top-1 ≥ 0.85 且与 Top-2 分差 ≥ 0.20，直接进入强校验门。</span></div>
+        <div><b>歧义任务</b><span>低于阈值或候选接近时由 Advisor 仲裁；仲裁失败则阻止，不猜默认角色。</span></div>
+      </div></article>
+      <article class="box"><h3>角色契约四项断言</h3><div class="checks">
+        <div class="check"><b>✓</b>capabilities 覆盖任务需求</div><div class="check"><b>✓</b>readOnly / codeWrites 一致</div>
+        <div class="check"><b>✓</b>stage_id 允许该角色执行</div><div class="check"><b>✓</b>requiresAdvisor 已满足</div>
+      </div><div class="rejects"><span class="reject">unknown_role</span><span class="reject">ambiguous_role</span><span class="reject">capability_mismatch</span><span class="reject">model_unavailable</span></div></article>
+    </section>
+
+    <div class="policy"><strong>关键不变量：</strong>validated_role_id 在第 4 步后冻结。第 5 步只能选择该角色允许的模型，不再使用“回退角色的模型”替代当前角色。没有合法模型时提示通过 `/model` 配置并停止执行。</div>
+    <p class="anchors">现有代码落点：<code>classifySpecTask</code> → 候选评分；<code>RoleContract</code> → 强校验；<code>resolveTaskModelRouting</code> → 严格模型解析；<code>TaskTool.#runSpawn</code> → 执行前断言；<code>createModelRoutingEvidence</code> → 全链路证据。</p>
+  </main>
+</body>
+</html>
