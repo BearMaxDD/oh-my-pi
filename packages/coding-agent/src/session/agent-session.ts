@@ -163,7 +163,6 @@ import {
 	resolveAdvisorDeliveryChannel,
 	slugifyAdvisorName,
 	withAdvisorRunAugmentation,
-	type AdvisorRunAugmentation,
 } from "../advisor";
 import { type AsyncJob, type AsyncJobDeliveryState, AsyncJobManager } from "../async";
 import { classifyDifficulty } from "../auto-thinking/classifier";
@@ -186,7 +185,7 @@ import {
 } from "../config/model-resolver";
 import { MODEL_ROLE_IDS, MODEL_ROLES } from "../config/model-roles";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
-import { buildServiceTierByFamily, serviceTierForAllFamilies, serviceTierSettingToTier } from "../config/service-tier";
+import { buildServiceTierByFamily } from "../config/service-tier";
 import type { Settings, SkillsSettings } from "../config/settings";
 import {
 	getDefault,
@@ -214,7 +213,6 @@ import type { CustomTool, CustomToolContext } from "../extensibility/custom-tool
 import { CustomToolAdapter } from "../extensibility/custom-tools/wrapper";
 import type {
 	AdvisorBeforeRunEvent,
-	AdvisorBeforeRunResult,
 	ExtensionCommandContext,
 	ExtensionRunner,
 	ExtensionUIContext,
@@ -2496,21 +2494,6 @@ export class AgentSession {
 		if (this.#agentKind !== "main" && !this.settings.get("advisor.subagents")) return false;
 
 		const descriptors = this.#resolveAdvisorRuntimeDescriptors(true);
-
-		// Advisor service tier (`tier.advisor`): "none" (default) runs the advisor
-		// on standard processing; "inherit" tracks the session's live per-family
-		// tiers per request (like the main agent, including /fast toggles); a
-		// concrete value is broadcast across families and applied to the advisor
-		// model's family. One value for all advisors.
-		const advisorTierSetting = this.settings.get("tier.advisor");
-		const advisorTierMap =
-			advisorTierSetting === "inherit"
-				? undefined
-				: serviceTierForAllFamilies(serviceTierSettingToTier(advisorTierSetting));
-		const advisorServiceTierResolver = (model: Model): ServiceTier | undefined =>
-			advisorTierSetting === "inherit"
-				? this.#effectiveServiceTier(model)
-				: resolveModelServiceTier(advisorTierMap, model);
 
 		for (const descriptor of descriptors) {
 			const {

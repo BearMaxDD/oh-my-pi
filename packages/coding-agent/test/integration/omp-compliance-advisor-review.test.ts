@@ -36,9 +36,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 // ---------------------------------------------------------------------------
 
 const compliancePackageDir: string | undefined = process.env.OMP_COMPLIANCE_PACKAGE;
-const extensionEntryPath: string = compliancePackageDir
-	? path.join(compliancePackageDir, "dist", "extension.js")
-	: "";
+const extensionEntryPath: string = compliancePackageDir ? path.join(compliancePackageDir, "dist", "extension.js") : "";
 
 // ---------------------------------------------------------------------------
 // Default TDD contract fixture
@@ -90,7 +88,7 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 			throw new Error("Missing OMP_COMPLIANCE_PACKAGE env var -- set it to the omp-compliance package path");
 		}
 		if (!fs.existsSync(extensionEntryPath)) {
-			throw new Error("Extension entry not found at " + extensionEntryPath);
+			throw new Error(`Extension entry not found at ${extensionEntryPath}`);
 		}
 
 		tmpDir = TempDir.createSync("@omp-compliance-integration-");
@@ -180,8 +178,8 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 		} catch {
 			// dispose may throw if already disposed
 		}
-		authStorage.close();
-		tmpDir.removeSync();
+		authStorage?.close();
+		tmpDir?.removeSync();
 
 		// Clean up test artifacts written to fork repo
 		const testDir = path.join(process.cwd(), ".omp-test-tdd");
@@ -203,7 +201,7 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 		// -----------------------------------------------------------------------
 		const cmd = ext.commands.get("compliance");
 		expect(cmd).toBeDefined();
- 
+
 		// tddPath is absolute and inside the repo root
 		// Extension command handler expects string[], not the OMP RegisteredCommand type.
 		const cmdHandler = cmd!.handler as unknown as (args: string[]) => Promise<void>;
@@ -214,10 +212,7 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 
 		// Read the first evidence record to extract task identity
 		const taskIdFromEvidence = evidenceFilesAfterStart[0].replace(/\.jsonl$/, "");
-		const jsonlContent = await fs.promises.readFile(
-			path.join(evidenceDir, taskIdFromEvidence + ".jsonl"),
-			"utf-8",
-		);
+		const jsonlContent = await fs.promises.readFile(path.join(evidenceDir, `${taskIdFromEvidence}.jsonl`), "utf-8");
 		const startRecords = jsonlContent
 			.split("\n")
 			.filter(Boolean)
@@ -240,13 +235,16 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 		expect(completeTool).toBeDefined();
 		const toolDef = completeTool!.definition;
 		// Tool definition uses extension's own type (handler, not execute)
-		const handlerFn = ("handler" in toolDef ? (toolDef as unknown as { handler: (p: Record<string, unknown>) => Promise<unknown> }).handler : undefined);
+		const handlerFn =
+			"handler" in toolDef
+				? (toolDef as unknown as { handler: (p: Record<string, unknown>) => Promise<unknown> }).handler
+				: undefined;
 		expect(handlerFn).toBeDefined();
- 
-		const completeResult = await handlerFn!({
+
+		const completeResult = (await handlerFn!({
 			summary: "Implemented the feature -- all tests pass",
 			claimed_verification: ["bun test passes", "biome check clean"],
-		}) as Record<string, unknown>;
+		})) as Record<string, unknown>;
 
 		expect(completeResult.success).toBe(true);
 		const reviewId = completeResult.reviewId as string;
@@ -254,10 +252,7 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 		expect(completeResult.status).toBe("advisor_reviewing");
 
 		// Verify completion_requested evidence
-		const afterCompleteJsonl = await fs.promises.readFile(
-			path.join(evidenceDir, taskId + ".jsonl"),
-			"utf-8",
-		);
+		const afterCompleteJsonl = await fs.promises.readFile(path.join(evidenceDir, `${taskId}.jsonl`), "utf-8");
 		const afterCompleteRecords = afterCompleteJsonl
 			.split("\n")
 			.filter(Boolean)
@@ -297,7 +292,10 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 		// Assert the compliance_verdict tool was injected
 		expect(augmentation!.additionalTools).toBeDefined();
 		expect(augmentation!.additionalTools!.length).toBeGreaterThan(0);
-		const rawTool = augmentation!.additionalTools![0] as unknown as { name: string; handler: (params: Record<string, unknown>) => Promise<unknown> };
+		const rawTool = augmentation!.additionalTools![0] as unknown as {
+			name: string;
+			handler: (params: Record<string, unknown>) => Promise<unknown>;
+		};
 		expect(rawTool.name).toBe("compliance_verdict");
 		expect(typeof rawTool.handler).toBe("function");
 
@@ -317,17 +315,12 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 		expect(verdictResult).toBeDefined();
 
 		// Verify completed evidence
-		const afterVerdictJsonl = await fs.promises.readFile(
-			path.join(evidenceDir, taskId + ".jsonl"),
-			"utf-8",
-		);
+		const afterVerdictJsonl = await fs.promises.readFile(path.join(evidenceDir, `${taskId}.jsonl`), "utf-8");
 		const afterVerdictRecords = afterVerdictJsonl
 			.split("\n")
 			.filter(Boolean)
 			.map(line => JSON.parse(line));
-		const hasCompleted = afterVerdictRecords.some(
-			(r: Record<string, unknown>) => r.event === "completed",
-		);
+		const hasCompleted = afterVerdictRecords.some((r: Record<string, unknown>) => r.event === "completed");
 		expect(hasCompleted).toBe(true);
 
 		// -----------------------------------------------------------------------

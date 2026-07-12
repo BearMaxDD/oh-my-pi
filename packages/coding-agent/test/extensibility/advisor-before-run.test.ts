@@ -4,7 +4,8 @@
  * TDD: these tests are written before the implementation.
  */
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
@@ -23,7 +24,6 @@ import { Type } from "@oh-my-pi/pi-coding-agent/extensibility/typebox";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -118,13 +118,7 @@ describe("advisor_before_run hook", () => {
 	});
 
 	function createRunner(extensions: Extension[]): ExtensionRunner {
-		return new ExtensionRunner(
-			extensions,
-			new ExtensionRuntime(),
-			tempDir.path(),
-			sessionManager,
-			modelRegistry,
-		);
+		return new ExtensionRunner(extensions, new ExtensionRuntime(), tempDir.path(), sessionManager, modelRegistry);
 	}
 
 	// -----------------------------------------------------------------------
@@ -225,9 +219,7 @@ describe("advisor_before_run hook", () => {
 		});
 
 		// Timeout should reject (not silently return undefined)
-		await expect(runner.emitBeforeRun(makeEvent("s1", "a1", "compliance_review"))).rejects.toThrow(
-			"timed out",
-		);
+		await expect(runner.emitBeforeRun(makeEvent("s1", "a1", "compliance_review"))).rejects.toThrow("timed out");
 		expect(errors.length).toBeGreaterThan(0);
 		expect(errors[0]).toContain("timed out");
 	});
