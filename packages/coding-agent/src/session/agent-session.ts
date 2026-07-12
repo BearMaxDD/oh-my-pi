@@ -153,10 +153,13 @@ import {
 	type AdvisorMessageDetails,
 	type AdvisorNote,
 	AdvisorRuntime,
+	type ComplianceVerdict,
+	type VerdictResult,
 	type AdvisorSeverity,
 	AdvisorTranscriptRecorder,
 	advisorTranscriptFilename,
 	formatAdvisorBatchContent,
+	ComplianceVerdictTool,
 	getOrCreateAdvisorProviderSessionId,
 	isAdvisorInterruptImmuneTurnActive,
 	isInterruptingSeverity,
@@ -837,6 +840,9 @@ export interface AgentSessionConfig {
 	 * receives, so the reviewer holds the agent to them.
 	 */
 	advisorContextPrompt?: string;
+	/** Optional sink the compliance extension registers. When present,
+	 *  #buildAdvisorRuntime injects a ComplianceVerdictTool wired to it. */
+	complianceVerdictSink?: (verdict: ComplianceVerdict) => Promise<VerdictResult>;
 	/**
 	 * Advisors discovered from `WATCHDOG.yml`. Empty/undefined runs a single
 	 * legacy advisor on the `advisor` role (byte-for-byte the pre-config path).
@@ -1641,6 +1647,7 @@ export class AgentSession {
 	#advisorSharedInstructions?: string;
 	#advisorContextPrompt?: string;
 	#advisorYieldQueueUnsubscribe?: () => void;
+	#complianceVerdictSink?: (verdict: ComplianceVerdict) => Promise<VerdictResult>;
 	/** Live advisors. Empty when no advisor is active. */
 	#advisors: ActiveAdvisor[] = [];
 	/** Configured advisor roster from WATCHDOG.yml; undefined/empty → single legacy advisor. */
@@ -2126,6 +2133,7 @@ export class AgentSession {
 		this.agent.serviceTierResolver = model => this.#effectiveServiceTier(model);
 		this.#serviceTierByFamily = config.serviceTierByFamily ?? {};
 		this.#advisorTools = config.advisorTools;
+		this.#complianceVerdictSink = config.complianceVerdictSink;
 		this.#advisorWatchdogPrompt = config.advisorWatchdogPrompt;
 		this.#advisorSharedInstructions = config.advisorSharedInstructions;
 		this.#advisorContextPrompt = config.advisorContextPrompt;
@@ -2531,6 +2539,12 @@ export class AgentSession {
 
 			const names = config.tools === undefined ? ADVISOR_DEFAULT_TOOL_NAMES : new Set(config.tools);
 			const tools = (this.#advisorTools ?? []).filter(t => names.has(t.name));
+			// Bridge: inject compliance_verdict tool when the extension registers a sink.
+			// NOT added to #advisorTools — that pool is built-in only.
+			// NOT gated on extension existence; the sink IS the gate.
+			if (this.#complianceVerdictSink && names.has("compliance_verdict")) {
+				tools.push(new ComplianceVerdictTool(this.#complianceVerdictSink));
+			}
 
 			const primaryProviderSessionId = this.sessionId;
 			const advisorSessionLabel = slug
@@ -16284,9 +16298,17 @@ export class AgentSession {
 	 * `/advisor configure` editor lists). The advisor is a full agent, so this is the
 	 * full built tool set; a tool whose optional factory returns null (e.g. lsp with
 	 * no servers) is absent.
+	 *
+	 * Includes bridge-injected tools (e.g. compliance_verdict) when their
+	 * extension sink is registered, even though they are not part of #advisorTools.
 	 */
 	getAdvisorAvailableToolNames(): string[] {
-		return (this.#advisorTools ?? []).map(tool => tool.name);
+		const names = (this.#advisorTools ?? []).map(tool => tool.name);
+		// Bridge: compliance_verdict is injected when the sink is present
+		if (this.#complianceVerdictSink && !names.includes("compliance_verdict")) {
+			names.push("compliance_verdict");
+		}
+		return names;
 	}
 
 	/**
