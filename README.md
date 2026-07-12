@@ -487,7 +487,11 @@ On first run omp inherits whatever is already on disk: rules, skills, and MCP se
 
 Ask omp to write the piece you're missing, then `/reload-plugins`. Keep it local, ship it in a `marketplace`, or publish it to npm.
 
-> 合规扩展接线与安装说明参见 [docs/superpowers/migrations/2026-07-13-v16.4.6-compliance-baseline.md](docs/superpowers/migrations/2026-07-13-v16.4.6-compliance-baseline.md)。
+> 合规扩展安装接线说明：
+> - 迁移基线与不迁移说明 → [docs/superpowers/migrations/2026-07-13-v16.4.6-compliance-baseline.md](docs/superpowers/migrations/2026-07-13-v16.4.6-compliance-baseline.md)
+> - 加载协议边界 → [docs/extension-loading.md#compliance-extension-boundary-note](docs/extension-loading.md)
+> - 扩展入口包 → `@bearmaxdd/omp-compliance` (独立仓库 `omp-custom`)
+> - 安装方式：添加扩展路径至 `~/.omp/agent/config.yml` 的 `extensions` 列表，或利用 `package.json` 的 `omp.extensions` 自动发现
 
 ## Philosophy
 

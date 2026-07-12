@@ -269,3 +269,29 @@ Legacy manifest key still accepted:
   }
 }
 ```
+
+---
+
+## Compliance Extension Boundary Note
+
+The `@bearmaxdd/omp-compliance` extension (developed in a separate monorepo
+`omp-custom`) follows the standard extension loading contract above. It is
+discoverable through its `package.json` `omp.extensions` manifest entry.
+
+Key boundary invariants:
+
+- **No auto-loading on import.** The extension exports `activate(api)` as its
+  default export. Importing the module alone does NOT register tools, commands,
+  or event handlers. Side effects only occur when `activate()` is called with
+  an `ExtensionAPI` instance.
+- **No modifications to upstream code.** The extension lives entirely in its own
+  package and does not modify any files under `packages/coding-agent/` in this
+  fork. This ensures clean rebases across upstream versions.
+- **Completion gate is opt-in.** The `compliance_complete` tool and `/compliance`
+  command are unavailable unless the extension is activated. OMP sessions
+  without the extension behave identically to a clean upstream build.
+- **Strict routing and PlanRun are not migrated.** The compliance extension
+  does not carry the heavy-routing architecture from the v16.3.3 archive tree.
+  It uses official v16.4.x extension APIs and the built-in Advisor.
+
+For installation and workflow instructions, refer to `omp-custom`'s documentation.
