@@ -528,9 +528,9 @@ describe("createAgentSession credential_disabled subscription", () => {
 					setModel: async () => false,
 					getThinkingLevel: () => undefined,
 					setThinkingLevel: () => {},
-				getSessionName: () => undefined,
-				setSessionName: async () => {},
-				requestAdvisorReview: async () => ({ accepted: false, reviewId: "" }),
+					getSessionName: () => undefined,
+					setSessionName: async () => {},
+					requestAdvisorReview: async () => ({ accepted: false, reviewId: "" }),
 				},
 				{
 					getModel: () => undefined,

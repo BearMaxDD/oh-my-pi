@@ -4,7 +4,9 @@ import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-a
 import { logger } from "@oh-my-pi/pi-utils";
 import { obfuscateToolArguments, type SecretObfuscator } from "../secrets/obfuscator";
 import type { AdvisorRunAugmentation } from "./run-augmentation";
+
 export type { AdvisorRunAugmentation };
+
 import { formatSessionHistoryMarkdown, PRIMARY_CONTEXT_CUSTOM_TYPES } from "../session/session-history-format";
 
 /**
@@ -127,20 +129,20 @@ export class AdvisorRuntime {
 		return this.#backlog;
 	}
 
-	requestReview(input: {
-		trigger: "compliance_review";
+	requestReview(input: { trigger: "compliance_review"; reviewId: string; metadata?: Record<string, unknown> }): {
+		accepted: boolean;
 		reviewId: string;
-		metadata?: Record<string, unknown>;
-	}): { accepted: boolean; reviewId: string; reason?: string } {
+		reason?: string;
+	} {
 		if (this.disposed) return { accepted: false, reviewId: input.reviewId, reason: "disposed" };
 		if (this.#reviewIds.has(input.reviewId)) {
 			return { accepted: false, reviewId: input.reviewId, reason: "duplicate" };
 		}
 		this.#reviewIds.add(input.reviewId);
 		const metadataStr = input.metadata
-			? "\n" + Object.entries(input.metadata)
-				.map(([k, v]) => `- ${k}: ${JSON.stringify(v)}`)
-				.join("\n")
+			? `\n${Object.entries(input.metadata)
+					.map(([k, v]) => `- ${k}: ${JSON.stringify(v)}`)
+					.join("\n")}`
 			: "";
 		const text = `### Compliance review\n\n**Review ID:** ${input.reviewId}${metadataStr}`;
 		this.#pending.push({
@@ -344,9 +346,7 @@ export class AdvisorRuntime {
 				const epoch = this.#epoch;
 				// Group: find contiguous items sharing the same trigger AND reviewId.
 				const first = this.#pending[0];
-				const groupEnd = this.#pending.findIndex(
-					p => p.trigger !== first.trigger || p.reviewId !== first.reviewId,
-				);
+				const groupEnd = this.#pending.findIndex(p => p.trigger !== first.trigger || p.reviewId !== first.reviewId);
 				const group = groupEnd >= 0 ? this.#pending.splice(0, groupEnd) : this.#pending.splice(0);
 				// Each delta already opens with a `### Session update`/`### Compliance review` heading, so
 				// join with a blank line rather than a `---` rule.

@@ -5,6 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
@@ -12,7 +13,6 @@ import type { Extension, ExtensionActions } from "@oh-my-pi/pi-coding-agent/exte
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -60,13 +60,7 @@ describe("ExtensionAPI → ExtensionRuntime requestAdvisorReview forwarding", ()
 
 	function createRunner(extensions: Extension[], actions: ExtensionActions): ExtensionRunner {
 		const runtime = new ExtensionRuntime();
-		const runner = new ExtensionRunner(
-			extensions,
-			runtime,
-			tempDir.path(),
-			sessionManager,
-			modelRegistry,
-		);
+		const runner = new ExtensionRunner(extensions, runtime, tempDir.path(), sessionManager, modelRegistry);
 		runner.initialize(actions, {
 			getModel: () => undefined,
 			isIdle: () => true,
@@ -85,7 +79,7 @@ describe("ExtensionAPI → ExtensionRuntime requestAdvisorReview forwarding", ()
 	// -----------------------------------------------------------------------
 	it("delegates requestAdvisorReview to the injected runtime action", async () => {
 		// Mock action: record what was forwarded
-		let receivedRequest: unknown = undefined;
+		let receivedRequest: unknown;
 		const mockAction: ExtensionActions["requestAdvisorReview"] = async request => {
 			receivedRequest = request;
 			return { accepted: true, reviewId: request.reviewId };
@@ -127,9 +121,7 @@ describe("ExtensionAPI → ExtensionRuntime requestAdvisorReview forwarding", ()
 	// -----------------------------------------------------------------------
 	it("ExtensionRuntime.requestAdvisorReview throws before initialize", async () => {
 		const runtime = new ExtensionRuntime();
-		expect(() =>
-			runtime.requestAdvisorReview({ reviewId: "test" }),
-		).toThrow("Extension runtime not initialized");
+		expect(() => runtime.requestAdvisorReview({ reviewId: "test" })).toThrow("Extension runtime not initialized");
 	});
 
 	// -----------------------------------------------------------------------

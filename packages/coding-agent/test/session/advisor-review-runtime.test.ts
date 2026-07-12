@@ -5,6 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
@@ -19,16 +20,12 @@ import type {
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function fakeExtension(
-	name: string,
-	handler: (...args: unknown[]) => Promise<unknown>,
-): Extension {
+function fakeExtension(name: string, handler: (...args: unknown[]) => Promise<unknown>): Extension {
 	return {
 		path: name,
 		resolvedPath: name,
@@ -68,18 +65,9 @@ describe("AgentSession requestAdvisorReview and advisor_before_run integration",
 		tempDir.removeSync();
 	});
 
-	function createRunner(
-		extensions: Extension[],
-		actions: ExtensionActions,
-	): ExtensionRunner {
+	function createRunner(extensions: Extension[], actions: ExtensionActions): ExtensionRunner {
 		const runtime = new ExtensionRuntime();
-		const runner = new ExtensionRunner(
-			extensions,
-			runtime,
-			tempDir.path(),
-			sessionManager,
-			modelRegistry,
-		);
+		const runner = new ExtensionRunner(extensions, runtime, tempDir.path(), sessionManager, modelRegistry);
 		runner.initialize(actions, {
 			getModel: () => undefined,
 			isIdle: () => true,

@@ -1093,14 +1093,9 @@ export class ExtensionRunner {
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
-				const handlerResult = await this.#runHandlerWithTimeout(
-					handler,
-					event,
-					ctx,
-					ext,
-					timeoutMs,
-					true,
-				) as AdvisorBeforeRunResult | undefined;
+				const handlerResult = (await this.#runHandlerWithTimeout(handler, event, ctx, ext, timeoutMs, true)) as
+					| AdvisorBeforeRunResult
+					| undefined;
 
 				merged = mergeAdvisorBeforeRunResult(merged, handlerResult);
 			}
