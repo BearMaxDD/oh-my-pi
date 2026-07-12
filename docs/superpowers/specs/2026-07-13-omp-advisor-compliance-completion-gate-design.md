@@ -29,6 +29,8 @@ OMP Custom 的主目标从“多角色、严格模型绑定、阶段化编排”
 8. 未通过时，系统将 Advisor 给出的结构化修复项送回主代理，任务继续修复并重新核验，不设次数上限。
 9. 没有实质进展的重复失败触发 `stalled` 保护；它不是完成，也不是质量裁决，只用于阻止无意义循环。
 10. 若官方 `v16.4.6` 没有可供 Advisor 发送结构化 verdict 的扩展点，允许一处白名单核心补丁：向 Advisor 注入 `compliance_verdict` 并将其结果交给薄扩展。
+11. 涉及代码定位、架构判断或代码修改的任务，必须先使用 codebase-memory MCP 读取真实代码图谱和源码证据。
+12. 涉及代码实现的受管任务必须通过官方 `task` 工具委派给子代理执行；Advisor 没有看到有效委派证据时不得给出 `pass`。
 
 ---
 
@@ -67,6 +69,7 @@ Advisor 的结论是质量裁决，但它必须建立在可复查事实之上。
 - 子代理模型回退控制；
 - 通过“没有 advisory”猜测任务已通过；
 - 在首版使用 `tool_call` 对生产编辑进行硬阻断；
+- 以严格角色模型、PlanRun 阶段或模型锁约束子代理；
 - 把完整聊天、密钥、完整 provider 响应写入合规 Evidence。
 
 ---
@@ -84,6 +87,8 @@ Advisor 的结论是质量裁决，但它必须建立在可复查事实之上。
 | `nit/concern/blocker` | `src/advisor/advise-tool.ts` | 为修复任务提供旁注或中断式纠偏 |
 | Emission Guard | `src/advisor/emission-guard.ts` | 防止空话、重复 advice 和单周期刷屏 |
 | 扩展工具事件 | `src/extensibility/extensions/*` | 采集 `tool_call`、`tool_result`、`turn_end` 等事实信号 |
+| 官方 TaskTool | `src/task/index.ts`、`src/task/executor.ts` | 使用普通官方子代理机制执行受管代码任务 |
+| codebase-memory MCP | `search_graph`、`trace_path`、`get_code_snippet`、`search_code` | 在修改前定位真实调用链、符号和源码证据 |
 | 任务完成前回传 | `AgentSession` steering / custom message | 将修复要求交还主代理 |
 
 现有 Advisor 的 `advise` 是单向建议通道，不提供“审核通过”的机器可读语义。因此合规完成门必须引入显式 verdict 协议，不能用 silence、`nit` 或文本正则代替。
@@ -123,7 +128,7 @@ Advisor 的结论是质量裁决，但它必须建立在可复查事实之上。
 | --- | --- | --- |
 | Contract Loader | 加载 TDD 原文、提炼摘要、计算合同哈希 | 判定任务是否通过 |
 | Session State | 保存 active/completing/remediating/stalled/completed 状态 | 多阶段编排或子任务 DAG |
-| Signal Collector | 聚合路径、命令、退出码和完成请求快照 | 直接拦截或裁决 |
+| Signal Collector | 聚合路径、命令、退出码、codebase MCP 与子代理委派快照 | 直接拦截或裁决 |
 | Context Injector | 在 completion review 时给 Advisor 注入紧凑事实和合同定位 | 重写 Advisor 核心 prompt 或 transcript |
 | Completion Gate | 请求 verdict、写入状态和把修复交还主代理 | 根据规则自行判定 pass/fail |
 | Evidence Store | 追加可审计 verdict、摘要和指纹 | 保存敏感全文或 provider secrets |
@@ -193,6 +198,51 @@ TDD 文档原文始终是合同源。摘要仅帮助减少 token 和驱动状态
 - Evidence 记录新版本；
 - 不允许静默用修改后的文档覆盖先前审查语境。
 
+### 5.4 代码定位与委派政策
+
+Contract Loader 根据 TDD 文档和用户任务把工作标记为：
+
+```ts
+type ComplianceTaskKind = "code" | "non_code";
+
+interface ComplianceExecutionPolicy {
+	taskKind: ComplianceTaskKind;
+	requiresCodebaseMcp: boolean;
+	requiresSubagentDelegation: boolean;
+}
+```
+
+代码任务默认：
+
+```text
+requiresCodebaseMcp = true
+requiresSubagentDelegation = true
+```
+
+非代码任务，例如纯文案、纯讨论或无代码影响的状态查询，可以由合同显式设为 `false`。该豁免必须在 TDD 原文或 `/compliance start` 参数中可见，Advisor 必须在 verdict 中确认豁免理由。
+
+#### codebase-memory MCP 证据
+
+在任何代码修改前，主代理或被委派的子代理必须完成：
+
+1. 若项目尚未索引，调用 `index_repository`；若已索引，读取 `index_status`；
+2. 使用 `search_graph` 或 `search_code` 定位相关符号、入口或调用点；
+3. 使用 `get_code_snippet` 或 `trace_path` 读取源码或调用关系；
+4. 在子代理结果中引用相关的文件、符号或调用链摘要。
+
+纯字符串、配置值或非代码文档检索可使用对应的文本搜索，但不得把文本搜索伪装成 codebase 代码定位证据。
+
+#### 子代理委派证据
+
+代码任务必须经官方 `task` 工具产生至少一个子代理工作单元。委派使用上游普通 TaskTool 语义：
+
+- 不使用已废弃的严格角色路由；
+- 不要求具体角色或精确模型绑定；
+- 不引入 PlanRun、多阶段调度或子代理 DAG；
+- 子代理执行结果必须包含其 `agent_id`、任务摘要、退出结果和引用的 codebase 证据。
+
+Advisor 不是委派执行器。它在完成审查时检查委派是否真实发生、子代理是否报告了与合同相关的代码定位证据，以及主代理是否吸收了子代理结果。
+
 ---
 
 ## 6. 任务状态机与无限修复循环
@@ -221,6 +271,8 @@ compliance_complete({ summary, claimed_verification? })
 
 - 当前 TDD 路径和合同哈希；
 - 自上次 verdict 以来的工具/命令摘要；
+- codebase-memory MCP 的索引、检索、源码读取和调用链证据摘要；
+- 官方 `task` 工具产生的子代理委派与结果摘要；
 - 工作区 diff 指纹与变更路径；
 - 主代理提交的完成摘要；
 - 先前 remediation 的完成情况。
@@ -303,6 +355,9 @@ Advisor 系统提示补充规则：
 4. 不得因为检测到某个事实信号而绕过整体语义审查；
 5. `pass` 表示任务符合绑定 TDD 合同，而不是仅代表命令曾经成功；
 6. 若 TDD 文档在执行中变更，必须评估变更对合同的影响。
+7. 对 `requiresCodebaseMcp = true` 的代码任务，未看到有效 codebase-memory MCP 定位和源码/调用链证据时，必须返回 `remediate`。
+8. 对 `requiresSubagentDelegation = true` 的代码任务，未看到官方 `task` 工具的真实子代理委派和结果时，必须返回 `remediate`。
+9. 不得把主代理自行阅读文件、自然语言声称“已分析”，或空的 TaskTool 调用视作上述证据的替代品。
 
 ### 7.2 规则包
 
@@ -313,6 +368,8 @@ Advisor 系统提示补充规则：
 - 检查变更是否超出 TDD 合同范围；
 - 检查 API、配置和路径是否在工作区真实存在；
 - 检查之前 remediation 是否确实关闭。
+- 检查代码任务是否先使用 codebase-memory MCP 定位真实代码关系；
+- 检查代码任务是否使用官方子代理执行并吸收委派结果。
 
 这些规则是 Advisor 的审查准则，不是合规层自行触发 pass/fail 的 if/else。
 
@@ -340,6 +397,16 @@ read, grep, glob, advise, compliance_verdict
 - `turn_end`：更新最近活动摘要；
 - `agent_end`：只刷新显示，不自动判定完成。
 
+对于 MCP 调用，Collector 识别 codebase-memory 的以下证据类型：
+
+```text
+index_repository / index_status
+search_graph / search_code
+get_code_snippet / trace_path
+```
+
+对于子代理委派，Collector 识别 `toolName: "task"` 的调用和结果，并记录子代理 ID、任务摘要、结束状态、输出工件以及被引用的 codebase 证据。Collector 仅记录事实；是否足够仍由 Advisor 作出最终判断。
+
 信号保留最小必要信息。命令输出按字节数截断并做敏感字段脱敏；大文件内容、完整聊天和密钥不写入合规存储。
 
 ### 8.2 Evidence JSONL
@@ -357,7 +424,15 @@ read, grep, glob, advise, compliance_verdict
   "attempt": 7,
   "signal_digest": {
     "changed_paths": ["packages/example/src/a.ts"],
-    "verification_commands": [{ "command": "bun test ...", "exit_code": 0 }]
+    "verification_commands": [{ "command": "bun test ...", "exit_code": 0 }],
+    "codebase_memory": {
+      "index_ready": true,
+      "queries": ["search_graph", "get_code_snippet"],
+      "references": ["src/orders/OrderHandler"]
+    },
+    "subagent_delegations": [
+      { "agent_id": "implementer-1", "status": "completed", "codebase_references": ["src/orders/OrderHandler"] }
+    ]
   },
   "advisor_verdict": {
     "status": "remediate",
@@ -478,6 +553,8 @@ BearMaxDD/omp-custom
 - stalled 判定和实质变更后的恢复；
 - Evidence JSONL 追加与恢复；
 - 状态面板模型。
+- codebase-memory MCP 证据归一化和引用校验；
+- 官方 `task` 子代理委派与结果摘要归一化。
 
 ### 11.2 Advisor 协议测试
 
@@ -487,6 +564,7 @@ BearMaxDD/omp-custom
 - 合同哈希不匹配时 verdict 被拒绝；
 - Advisor 只能使用只读工具和 `compliance_verdict`；
 - emission guard 仍会抑制重复空话，但不吞掉合法 verdict。
+- 要求 codebase MCP 或子代理委派的代码任务，缺少任一证据时 Advisor 必须返回 `remediate`。
 
 ### 11.3 行为夹具
 
@@ -496,6 +574,9 @@ BearMaxDD/omp-custom
 | 测试失败仍调用 complete | Advisor 给出 remediate |
 | 范围超出 TDD | Advisor 判断是否需要 remediate，并说明范围证据 |
 | TDD 摘要不完整 | Advisor 读取原文后仍能作出 verdict |
+| 代码任务未调用 codebase-memory MCP | Advisor 给出 remediate，要求图谱定位和源码/调用链证据 |
+| 代码任务未委派子代理 | Advisor 给出 remediate，要求使用官方 task 工具并引用其结果 |
+| 子代理只报结论、没有 codebase 证据 | Advisor 给出 remediate，要求补充可追溯定位结果 |
 | 完整实现、测试和验证 | Advisor 发出 pass，任务进入 completed |
 | 多次修复后通过 | 记录连续 attempts，最终 completed |
 | 同一失败无变化 | 进入 stalled，不完成 |
@@ -530,6 +611,8 @@ BearMaxDD/omp-custom
 11. Advisor 默认保持只读；
 12. 扩展关闭后官方 OMP 不受影响；
 13. 若存在核心补丁，它只服务于 `compliance_verdict` 接线并已被独立测试。
+14. 每个代码任务在完成前都有 codebase-memory MCP 的图谱和源码/调用链证据。
+15. 每个代码任务在完成前都有官方 TaskTool 产生的有效子代理委派和结果证据。
 
 ---
 
