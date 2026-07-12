@@ -94,6 +94,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			setSessionName: async name => {
 				await session.sessionManager.setSessionName(name, "user");
 			},
+			requestAdvisorReview: request => session.requestAdvisorReview(request),
 		},
 		// ExtensionContextActions
 		{

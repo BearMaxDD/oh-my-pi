@@ -114,6 +114,13 @@ export class ExtensionRuntime implements IExtensionRuntime {
 	setSessionName(): Promise<void> {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
+
+	requestAdvisorReview(_request: {
+		reviewId: string;
+		metadata?: Record<string, unknown>;
+	}): Promise<{ accepted: boolean; reviewId: string; reason?: string }> {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
 }
 
 /**
@@ -258,6 +265,13 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 
 	setSessionName(name: string): Promise<void> {
 		return this.runtime.setSessionName(name);
+	}
+
+	requestAdvisorReview(request: {
+		reviewId: string;
+		metadata?: Record<string, unknown>;
+	}): Promise<{ accepted: boolean; reviewId: string; reason?: string }> {
+		return this.runtime.requestAdvisorReview(request);
 	}
 
 	registerProvider(name: string, config: ProviderConfig): void {
