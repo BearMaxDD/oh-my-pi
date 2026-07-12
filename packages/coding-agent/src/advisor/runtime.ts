@@ -3,6 +3,8 @@ import { estimateTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { obfuscateToolArguments, type SecretObfuscator } from "../secrets/obfuscator";
+import type { AdvisorRunAugmentation } from "./run-augmentation";
+export type { AdvisorRunAugmentation };
 import { formatSessionHistoryMarkdown, PRIMARY_CONTEXT_CUSTOM_TYPES } from "../session/session-history-format";
 
 /**
@@ -12,7 +14,7 @@ import { formatSessionHistoryMarkdown, PRIMARY_CONTEXT_CUSTOM_TYPES } from "../s
  * this field after every prompt to detect a failed turn.
  */
 export interface AdvisorAgent {
-	prompt(input: string): Promise<void>;
+	prompt(input: string, augmentation?: AdvisorRunAugmentation): Promise<void>;
 	abort(reason?: unknown): void;
 	reset(): void;
 	/**
@@ -61,11 +63,28 @@ export interface AdvisorRuntimeHost {
 	onTurnError?(error: unknown): Promise<void> | void;
 	/** Surface a non-recovering advisor failure to the host UI without adding model-visible context. */
 	notifyFailure?(error: unknown): void;
+	/**
+	 * Called immediately before each `agent.prompt(batch)` cycle to obtain
+	 * per-run augmentation (additional system context and tools). Return
+	 * `undefined` for no augmentation. Errors thrown here propagate through the
+	 * standard retry/notify path (3 consecutive failures → backlog dropped).
+	 */
+	beforeRun?(input: AdvisorBeforeRunInput): Promise<AdvisorRunAugmentation | undefined>;
+}
+export type AdvisorRunTrigger = "turn_end" | "compliance_review";
+
+export interface AdvisorBeforeRunInput {
+	trigger: AdvisorRunTrigger;
+	reviewId?: string;
+	metadata?: Readonly<Record<string, unknown>>;
 }
 
-interface PendingDelta {
+interface PendingAdvisorRun {
 	text: string;
 	turns: number;
+	trigger: AdvisorRunTrigger;
+	reviewId?: string;
+	metadata?: Readonly<Record<string, unknown>>;
 }
 
 interface CatchupWaiter {
@@ -83,7 +102,8 @@ export class AdvisorRuntime {
 	 *  marker so the advisor isn't re-fed the full ~1k-token rules each turn.
 	 *  Cleared on every re-prime/seed and when a failed batch is dropped. */
 	#seenContext = new Map<string, string>();
-	#pending: PendingDelta[] = [];
+	#pending: PendingAdvisorRun[] = [];
+	#reviewIds = new Set<string>();
 	#busy = false;
 	#backlog = 0;
 	#consecutiveFailures = 0;
@@ -107,13 +127,42 @@ export class AdvisorRuntime {
 		return this.#backlog;
 	}
 
+	requestReview(input: {
+		trigger: "compliance_review";
+		reviewId: string;
+		metadata?: Record<string, unknown>;
+	}): { accepted: boolean; reviewId: string; reason?: string } {
+		if (this.disposed) return { accepted: false, reviewId: input.reviewId, reason: "disposed" };
+		if (this.#reviewIds.has(input.reviewId)) {
+			return { accepted: false, reviewId: input.reviewId, reason: "duplicate" };
+		}
+		this.#reviewIds.add(input.reviewId);
+		const metadataStr = input.metadata
+			? "\n" + Object.entries(input.metadata)
+				.map(([k, v]) => `- ${k}: ${JSON.stringify(v)}`)
+				.join("\n")
+			: "";
+		const text = `### Compliance review\n\n**Review ID:** ${input.reviewId}${metadataStr}`;
+		this.#pending.push({
+			text,
+			turns: 1,
+			trigger: input.trigger,
+			reviewId: input.reviewId,
+			metadata: input.metadata ? Object.freeze({ ...input.metadata }) : undefined,
+		});
+		this.#backlog++;
+		this.#notifyWaiters();
+		void this.#drain();
+		return { accepted: true, reviewId: input.reviewId };
+	}
+
 	onTurnEnd(messages?: AgentMessage[]): void {
 		if (this.disposed) return;
 		const all = messages ?? this.host.snapshotMessages();
 		this.#latestMessages = all;
 		const render = this.#renderDelta(all);
 		if (render) {
-			this.#pending.push({ text: render, turns: 1 });
+			this.#pending.push({ text: render, turns: 1, trigger: "turn_end" });
 			this.#backlog++;
 			this.#notifyWaiters();
 			void this.#drain();
@@ -147,6 +196,7 @@ export class AdvisorRuntime {
 		this.#backlog = 0;
 		this.#consecutiveFailures = 0;
 		this.#failureNotified = false;
+		this.#reviewIds.clear();
 		this.#wakeAllWaiters();
 		try {
 			this.agent.abort("advisor disposed");
@@ -158,6 +208,7 @@ export class AdvisorRuntime {
 		this.#pending = [];
 		this.#consecutiveFailures = 0;
 		this.#failureNotified = false;
+		this.#reviewIds.clear();
 		this.#seenContext.clear();
 		if (clearBacklog) {
 			this.#backlog = 0;
@@ -196,6 +247,7 @@ export class AdvisorRuntime {
 		this.#backlog = 0;
 		this.#consecutiveFailures = 0;
 		this.#failureNotified = false;
+		this.#reviewIds.clear();
 		this.#seenContext.clear();
 		this.#wakeAllWaiters();
 	}
@@ -289,12 +341,17 @@ export class AdvisorRuntime {
 		this.#busy = true;
 		try {
 			while (!this.disposed && this.#pending.length) {
-				const popped = this.#pending.splice(0);
 				const epoch = this.#epoch;
-				// Each delta already opens with a `### Session update` heading, so
+				// Group: find contiguous items sharing the same trigger AND reviewId.
+				const first = this.#pending[0];
+				const groupEnd = this.#pending.findIndex(
+					p => p.trigger !== first.trigger || p.reviewId !== first.reviewId,
+				);
+				const group = groupEnd >= 0 ? this.#pending.splice(0, groupEnd) : this.#pending.splice(0);
+				// Each delta already opens with a `### Session update`/`### Compliance review` heading, so
 				// join with a blank line rather than a `---` rule.
-				const candidateBatch = popped.map(b => b.text).join("\n\n");
-				const turnsCovered = popped.reduce((sum, b) => sum + b.turns, 0);
+				const candidateBatch = group.map(b => b.text).join("\n\n");
+				const turnsCovered = group.reduce((sum, b) => sum + b.turns, 0);
 				const incomingTokens = estimateTokens({
 					role: "user",
 					content: candidateBatch,
@@ -343,7 +400,15 @@ export class AdvisorRuntime {
 					// gate) before each model cycle, so the new batch starts with a
 					// fresh budget. Dedupe history persists across cycles.
 					this.host.beginAdvisorUpdate?.();
-					await this.agent.prompt(batch);
+					// Obtain per-run augmentation from the host before this prompt cycle.
+					// beforeRun failures propagate to the catch block so they go through
+					// the standard retry/notify path (3 consecutive failures → backlog dropped).
+					const augmentation = await this.host.beforeRun?.({
+						trigger: first.trigger,
+						reviewId: first.reviewId,
+						metadata: first.metadata,
+					});
+					await this.agent.prompt(batch, augmentation);
 					// `Agent.#runLoop` catches provider/stream failures internally and
 					// resolves `prompt()` cleanly with the assistant turn ending in
 					// `stopReason: "error"` and the message recorded on `state.error`.
@@ -389,7 +454,13 @@ export class AdvisorRuntime {
 						this.#seenContext.clear();
 						success = true;
 					} else {
-						this.#pending.unshift({ text: batch, turns: finalTurns });
+						this.#pending.unshift({
+							text: batch,
+							turns: finalTurns,
+							trigger: first.trigger,
+							reviewId: first.reviewId,
+							metadata: first.metadata,
+						});
 						await Bun.sleep(this.retryDelayMs);
 					}
 				}
