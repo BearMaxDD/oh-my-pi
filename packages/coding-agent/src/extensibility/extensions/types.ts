@@ -916,7 +916,7 @@ export interface AdvisorReviewRequest {
 
 /** Receipt returned from requestAdvisorReview. */
 export interface AdvisorReviewReceipt {
-	accepted: boolean;
+	status: "accepted" | "rejected";
 	reviewId: string;
 	reason?: string;
 }

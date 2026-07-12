@@ -130,13 +130,13 @@ export class AdvisorRuntime {
 	}
 
 	requestReview(input: { trigger: "compliance_review"; reviewId: string; metadata?: Record<string, unknown> }): {
-		accepted: boolean;
+		status: "accepted" | "rejected";
 		reviewId: string;
 		reason?: string;
 	} {
-		if (this.disposed) return { accepted: false, reviewId: input.reviewId, reason: "disposed" };
+		if (this.disposed) return { status: "rejected", reviewId: input.reviewId, reason: "disposed" };
 		if (this.#reviewIds.has(input.reviewId)) {
-			return { accepted: false, reviewId: input.reviewId, reason: "duplicate" };
+			return { status: "rejected", reviewId: input.reviewId, reason: "duplicate" };
 		}
 		this.#reviewIds.add(input.reviewId);
 		const metadataStr = input.metadata
@@ -155,7 +155,7 @@ export class AdvisorRuntime {
 		this.#backlog++;
 		this.#notifyWaiters();
 		void this.#drain();
-		return { accepted: true, reviewId: input.reviewId };
+		return { status: "accepted", reviewId: input.reviewId };
 	}
 
 	onTurnEnd(messages?: AgentMessage[]): void {

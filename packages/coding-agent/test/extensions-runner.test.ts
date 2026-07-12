@@ -1020,7 +1020,7 @@ describe("ExtensionRunner", () => {
 					setThinkingLevel: () => {},
 					getSessionName: () => undefined,
 					setSessionName: async () => {},
-					requestAdvisorReview: async () => ({ accepted: false, reviewId: "" }),
+					requestAdvisorReview: async () => ({ status: "rejected", reviewId: "" }),
 				},
 				{
 					getModel: () => undefined,
@@ -1085,7 +1085,7 @@ describe("ExtensionRunner", () => {
 					setSessionName: async name => {
 						await sessionManager.setSessionName(name);
 					},
-					requestAdvisorReview: async () => ({ accepted: false, reviewId: "" }),
+					requestAdvisorReview: async () => ({ status: "rejected", reviewId: "" }),
 				},
 				{
 					getModel: () => undefined,
@@ -1142,7 +1142,7 @@ describe("ExtensionRunner", () => {
 					setThinkingLevel: () => {},
 					getSessionName: () => undefined,
 					setSessionName: async () => {},
-					requestAdvisorReview: async () => ({ accepted: false, reviewId: "" }),
+					requestAdvisorReview: async () => ({ status: "rejected", reviewId: "" }),
 				},
 				{
 					getModel: () => undefined,
@@ -1810,7 +1810,7 @@ describe("ExtensionRunner", () => {
 					setThinkingLevel: () => {},
 					getSessionName: () => sessionManager.getSessionName(),
 					setSessionName: async () => {},
-					requestAdvisorReview: async () => ({ accepted: false, reviewId: "" }),
+					requestAdvisorReview: async () => ({ status: "rejected", reviewId: "" }),
 				},
 				{
 					getModel: () => undefined,

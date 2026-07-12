@@ -110,7 +110,7 @@ describe("AgentSession requestAdvisorReview and advisor_before_run integration",
 			requestAdvisorReview: async request => {
 				// Simulate what AgentSession.requestAdvisorReview would do:
 				// forward to the first advisor's runtime
-				return { accepted: true, reviewId: request.reviewId };
+				return { status: "accepted", reviewId: request.reviewId };
 			},
 		});
 
@@ -160,7 +160,7 @@ describe("AgentSession requestAdvisorReview and advisor_before_run integration",
 			setSessionName: async () => {},
 			requestAdvisorReview: async request => {
 				receivedReviewId = request.reviewId;
-				return { accepted: true, reviewId: request.reviewId };
+				return { status: "accepted", reviewId: request.reviewId };
 			},
 		};
 
@@ -171,7 +171,7 @@ describe("AgentSession requestAdvisorReview and advisor_before_run integration",
 			reviewId: "rev-003",
 		});
 
-		expect(receipt.accepted).toBe(true);
+		expect(receipt.status).toBe("accepted");
 		expect(receipt.reviewId).toBe("rev-003");
 		expect(receivedReviewId).toBe("rev-003");
 	});
@@ -199,7 +199,7 @@ describe("AgentSession requestAdvisorReview and advisor_before_run integration",
 			setThinkingLevel: () => {},
 			getSessionName: () => undefined,
 			setSessionName: async () => {},
-			requestAdvisorReview: async request => ({ accepted: false, reviewId: request.reviewId }),
+			requestAdvisorReview: async request => ({ status: "rejected", reviewId: request.reviewId }),
 		});
 
 		await runner.emitBeforeRun({

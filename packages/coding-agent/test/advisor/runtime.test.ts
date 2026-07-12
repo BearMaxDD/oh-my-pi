@@ -44,7 +44,7 @@ describe("AdvisorRuntime — compliance review queue", () => {
 			reviewId: "review-1",
 			metadata: { taskId: "task-9", contractHash: HASH, attempt: 1 },
 		});
-		expect(receipt).toEqual({ accepted: true, reviewId: "review-1" });
+		expect(receipt).toEqual({ status: "accepted", reviewId: "review-1" });
 
 		// Wait for drain to process the review
 		await runtime.waitForCatchup(1000, 1);
@@ -61,7 +61,7 @@ describe("AdvisorRuntime — compliance review queue", () => {
 			reviewId: "review-1",
 		});
 		expect(dup).toEqual({
-			accepted: false,
+			status: "rejected",
 			reviewId: "review-1",
 			reason: "duplicate",
 		});

@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
+import { createMockModel, type MockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -82,6 +83,12 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 	let extensionRunner: ExtensionRunner;
 	let tddPath: string;
 	let extensionsResult: LoadExtensionsResult;
+	let advisorMock: MockModel;
+	let currentTaskId = "";
+	let currentContractHash = "";
+	let currentAttempt = 0;
+	let hookSawFrozenMessages = false;
+	const originalPrimaryMessage = "primary transcript must remain unchanged";
 
 	beforeEach(async () => {
 		if (!compliancePackageDir) {
@@ -104,11 +111,43 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 		extensionsResult = await loadExtensions([extensionEntryPath], tmpDir.path());
 		expect(extensionsResult.extensions).toHaveLength(1);
 		expect(extensionsResult.errors).toEqual([]);
+		const beforeRunHandlers = extensionsResult.extensions[0].handlers.get("advisor_before_run") ?? [];
+		beforeRunHandlers.push(async (event: unknown) => {
+			const messages = (event as { messages?: ReadonlyArray<{ content?: unknown }> }).messages;
+			hookSawFrozenMessages = Object.isFrozen(messages);
+			if (messages?.[0]) messages[0].content = "extension mutation";
+		});
+		extensionsResult.extensions[0].handlers.set("advisor_before_run", beforeRunHandlers);
 
 		// Setup auth and model
 		authStorage = await AuthStorage.create(path.join(tmpDir.path(), "testauth.db"));
 		modelRegistry = new ModelRegistry(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		sessionManager = SessionManager.inMemory();
+		advisorMock = createMockModel({
+			handler: context => {
+				const hasVerdictTool = context.tools?.some(tool => tool.name === "compliance_verdict") ?? false;
+				if (hasVerdictTool) {
+					return {
+						content: [
+							{
+								type: "toolCall",
+								name: "compliance_verdict",
+								arguments: {
+									schema_version: 1,
+									task_id: currentTaskId,
+									contract_hash: currentContractHash,
+									attempt: currentAttempt,
+									status: "pass",
+									findings: [{ id: "review-1", reason: "All checks passed" }],
+								},
+							},
+						],
+					};
+				}
+				return { content: ["Review completed."] };
+			},
+		});
 
 		// Create extension runner
 		extensionRunner = new ExtensionRunner(
@@ -133,7 +172,7 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 				setThinkingLevel: () => {},
 				getSessionName: () => undefined,
 				setSessionName: async () => {},
-				requestAdvisorReview: async request => ({ accepted: false, reviewId: request.reviewId }),
+				requestAdvisorReview: request => session.requestAdvisorReview(request),
 			},
 			{
 				getModel: () => undefined,
@@ -148,7 +187,7 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 		);
 
 		// Emit session_start so the extension captures a sessionId
-		await extensionRunner.emit({ type: "session_start", sessionId: "test-session-id" } as never);
+		await extensionRunner.emit({ type: "session_start" });
 
 		// Create AgentSession with advisor enabled
 		const bundled = getBundledModel("anthropic", "claude-sonnet-4-5");
@@ -157,7 +196,12 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 
 		const agent = new Agent({
 			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["test"], tools: [] },
+			initialState: {
+				model,
+				systemPrompt: ["test"],
+				tools: [],
+				messages: [{ role: "user", content: originalPrimaryMessage, timestamp: Date.now() }],
+			},
 		});
 
 		session = new AgentSession({
@@ -168,7 +212,10 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 			}),
 			modelRegistry,
 			extensionRunner,
+			advisorStreamFn: advisorMock.stream,
 		});
+		session.settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
+		expect(session.setAdvisorEnabled(true)).toBe(true);
 		session.subscribe(() => {});
 	});
 
@@ -224,6 +271,9 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 		const taskId = startRecord.taskId as string;
 		const contractHash = startRecord.contractHash as string;
 		const attempt = startRecord.attempt as number;
+		currentTaskId = taskId;
+		currentContractHash = contractHash;
+		currentAttempt = attempt;
 		expect(taskId).toBeTruthy();
 		expect(contractHash).toBeTruthy();
 		expect(typeof attempt).toBe("number");
@@ -250,6 +300,7 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 		const reviewId = completeResult.reviewId as string;
 		expect(reviewId).toBeTruthy();
 		expect(completeResult.status).toBe("advisor_reviewing");
+		expect(completeResult.receipt).toMatchObject({ status: "accepted", reviewId });
 
 		// Verify completion_requested evidence
 		const afterCompleteJsonl = await fs.promises.readFile(path.join(evidenceDir, `${taskId}.jsonl`), "utf-8");
@@ -261,58 +312,28 @@ describe("OMP Compliance Advisor Extension -- cross-repo integration", () => {
 			(r: Record<string, unknown>) => r.event === "completion_requested",
 		);
 		expect(hasRequested).toBe(true);
+		expect(afterCompleteRecords.some((r: Record<string, unknown>) => r.event === "advisor_review_accepted")).toBe(
+			true,
+		);
 
-		// -----------------------------------------------------------------------
-		// 3. Emit advisor_before_run -- fake the advisor stream
-		// -----------------------------------------------------------------------
-		const beforeRunEvent: AdvisorBeforeRunEvent = {
-			type: "advisor_before_run",
-			sessionId: "test-session-id",
-			advisorId: "advisor-1",
-			trigger: "compliance_review",
-			messages: Object.freeze([]) as readonly [],
-			metadata: Object.freeze({
-				reviewId,
-				taskId,
-				contractHash,
-				attempt,
-			}) as Readonly<Record<string, unknown>>,
-		};
-
-		const augmentation = await extensionRunner.emitBeforeRun(beforeRunEvent);
-		expect(augmentation).toBeDefined();
-
-		// Assert rules and context were injected
-		expect(augmentation!.additionalSystemContext).toBeDefined();
-		expect(augmentation!.additionalSystemContext!.length).toBe(2);
-		const [rules, context] = augmentation!.additionalSystemContext!;
-		expect(rules).toBeTruthy();
-		expect(context).toBeTruthy();
-
-		// Assert the compliance_verdict tool was injected
-		expect(augmentation!.additionalTools).toBeDefined();
-		expect(augmentation!.additionalTools!.length).toBeGreaterThan(0);
-		const rawTool = augmentation!.additionalTools![0] as unknown as {
-			name: string;
-			handler: (params: Record<string, unknown>) => Promise<unknown>;
-		};
-		expect(rawTool.name).toBe("compliance_verdict");
-		expect(typeof rawTool.handler).toBe("function");
-
-		// -----------------------------------------------------------------------
-		// 4. Call the pass fixture through the compliance_verdict tool
-		// -----------------------------------------------------------------------
-		const passFixture: Record<string, unknown> = {
-			schema_version: 1,
-			task_id: taskId,
-			contract_hash: contractHash,
-			attempt: attempt,
-			status: "pass",
-			findings: [{ id: "review-1", reason: "All checks passed" }],
-		};
-
-		const verdictResult = (await rawTool.handler(passFixture)) as Record<string, unknown>;
-		expect(verdictResult).toBeDefined();
+		// The real Advisor runtime must invoke compliance_verdict through AgentTool.execute.
+		for (let i = 0; i < 100; i++) {
+			const records = (await fs.promises.readFile(path.join(evidenceDir, `${taskId}.jsonl`), "utf-8"))
+				.split("\n")
+				.filter(Boolean)
+				.map(line => JSON.parse(line) as Record<string, unknown>);
+			if (records.some(record => record.event === "completed")) break;
+			await Bun.sleep(10);
+		}
+		expect(advisorMock.calls.length).toBeGreaterThanOrEqual(1);
+		const reviewCall = advisorMock.calls.find(call =>
+			call.context.tools?.some(tool => tool.name === "compliance_verdict"),
+		);
+		expect(reviewCall).toBeDefined();
+		expect(hookSawFrozenMessages).toBe(true);
+		expect((session.agent.state.messages[0] as { content?: unknown } | undefined)?.content).toBe(
+			originalPrimaryMessage,
+		);
 
 		// Verify completed evidence
 		const afterVerdictJsonl = await fs.promises.readFile(path.join(evidenceDir, `${taskId}.jsonl`), "utf-8");

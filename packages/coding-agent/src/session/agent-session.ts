@@ -2648,8 +2648,11 @@ export class AgentSession {
 						sessionId: this.sessionId,
 						advisorId: slug || advisorName,
 						trigger: input.trigger,
-						messages: this.agent.state.messages,
-						metadata: input.metadata,
+						messages: Object.freeze(structuredClone(this.agent.state.messages)),
+						metadata: Object.freeze({
+							...(input.metadata ?? {}),
+							...(input.reviewId ? { reviewId: input.reviewId } : {}),
+						}),
 					};
 					const result = await this.#extensionRunner?.emitBeforeRun(event);
 					if (!result) return undefined;
@@ -16243,15 +16246,15 @@ export class AgentSession {
 	 * Returns a receipt indicating whether the review was accepted.
 	 *
 	 * When the advisor is disabled or unavailable, returns a receipt with
-	 * `accepted: false` and a reason.
+	 * `status: "rejected"` and a reason.
 	 */
 	async requestAdvisorReview(request: {
 		reviewId: string;
 		metadata?: Record<string, unknown>;
-	}): Promise<{ accepted: boolean; reviewId: string; reason?: string }> {
-		if (!this.#advisorEnabled) return { accepted: false, reviewId: request.reviewId, reason: "advisor_disabled" };
+	}): Promise<{ status: "accepted" | "rejected"; reviewId: string; reason?: string }> {
+		if (!this.#advisorEnabled) return { status: "rejected", reviewId: request.reviewId, reason: "advisor_disabled" };
 		if (!this.#buildAdvisorRuntime(true) || this.#advisors.length === 0) {
-			return { accepted: false, reviewId: request.reviewId, reason: "advisor_unavailable" };
+			return { status: "rejected", reviewId: request.reviewId, reason: "advisor_unavailable" };
 		}
 		return this.#advisors[0].runtime.requestReview({ trigger: "compliance_review", ...request });
 	}
