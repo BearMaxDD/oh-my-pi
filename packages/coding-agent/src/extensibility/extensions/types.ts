@@ -908,6 +908,19 @@ export interface AdvisorBeforeRunResult {
 	metadata?: Readonly<Record<string, unknown>>;
 }
 
+/** Request payload for extension-initiated advisor review. */
+export interface AdvisorReviewRequest {
+	reviewId: string;
+	metadata?: Record<string, unknown>;
+}
+
+/** Receipt returned from requestAdvisorReview. */
+export interface AdvisorReviewReceipt {
+	accepted: boolean;
+	reviewId: string;
+	reason?: string;
+}
+
 /** Union of all event types */
 export type ExtensionEvent =
 	| ResourcesDiscoverEvent
@@ -1235,6 +1248,12 @@ export interface ExtensionAPI {
 	/** Set the session name. Persists to the session file. */
 	setSessionName(name: string): Promise<void>;
 
+	/**
+	 * Request an advisor review from the compliance advisor runtime.
+	 * Returns a receipt indicating whether the review was accepted.
+	 */
+	requestAdvisorReview(request: AdvisorReviewRequest): Promise<AdvisorReviewReceipt>;
+
 	// =========================================================================
 	// Provider Registration
 	// =========================================================================
@@ -1430,6 +1449,7 @@ export interface ExtensionActions {
 	setThinkingLevel: SetThinkingLevelHandler;
 	getSessionName: () => string | undefined;
 	setSessionName: (name: string) => Promise<void>;
+	requestAdvisorReview: (request: AdvisorReviewRequest) => Promise<AdvisorReviewReceipt>;
 }
 
 /** Actions for ExtensionContext (ctx.* in event handlers). */

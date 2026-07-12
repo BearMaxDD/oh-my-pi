@@ -2604,6 +2604,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						setSessionName: async name => {
 							await session.sessionManager.setSessionName(name, "user");
 						},
+						requestAdvisorReview: request => session.requestAdvisorReview(request),
 					},
 					{
 						getModel: () => session.model,

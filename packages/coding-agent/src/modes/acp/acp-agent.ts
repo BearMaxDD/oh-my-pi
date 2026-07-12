@@ -2295,6 +2295,7 @@ export class AcpAgent implements Agent {
 				setSessionName: async name => {
 					await record.session.sessionManager.setSessionName(name, "user");
 				},
+				requestAdvisorReview: request => record.session.requestAdvisorReview(request),
 			},
 			{
 				getModel: () => record.session.model,
