@@ -487,6 +487,8 @@ On first run omp inherits whatever is already on disk: rules, skills, and MCP se
 
 Ask omp to write the piece you're missing, then `/reload-plugins`. Keep it local, ship it in a `marketplace`, or publish it to npm.
 
+> 合规扩展接线与安装说明参见 [docs/superpowers/migrations/2026-07-13-v16.4.6-compliance-baseline.md](docs/superpowers/migrations/2026-07-13-v16.4.6-compliance-baseline.md)。
+
 ## Philosophy
 
 omp is a fork of [pi-mono](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), extended with a batteries-included coding workflow.
