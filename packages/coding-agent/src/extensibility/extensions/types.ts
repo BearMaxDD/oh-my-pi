@@ -9,6 +9,7 @@
  */
 import type {
 	AgentMessage,
+	AgentTool,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ThinkingLevel,
@@ -884,6 +885,29 @@ export function isToolCallEventType(toolName: string, event: ToolCallEvent): boo
 	return event.toolName === toolName;
 }
 
+// ============================================================================
+// Advisor Events
+// ============================================================================
+
+export type AdvisorRunTrigger = "turn_end" | "compliance_review";
+
+/** Fired before an advisor runs. Extensions can inject system context and tools. */
+export interface AdvisorBeforeRunEvent {
+	type: "advisor_before_run";
+	sessionId: string;
+	advisorId: string;
+	trigger: AdvisorRunTrigger;
+	messages: readonly AgentMessage[];
+	metadata?: Readonly<Record<string, unknown>>;
+}
+
+/** Result from advisor_before_run event handler */
+export interface AdvisorBeforeRunResult {
+	additionalSystemContext?: readonly string[];
+	additionalTools?: readonly AgentTool[];
+	metadata?: Readonly<Record<string, unknown>>;
+}
+
 /** Union of all event types */
 export type ExtensionEvent =
 	| ResourcesDiscoverEvent
@@ -917,7 +941,8 @@ export type ExtensionEvent =
 	| ToolCallEvent
 	| ToolResultEvent
 	| ToolApprovalRequestedEvent
-	| ToolApprovalResolvedEvent;
+	| ToolApprovalResolvedEvent
+	| AdvisorBeforeRunEvent;
 
 // ============================================================================
 // Event Results
@@ -1097,6 +1122,7 @@ export interface ExtensionAPI {
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "user_python", handler: ExtensionHandler<UserPythonEvent, UserPythonEventResult>): void;
+	on(event: "advisor_before_run", handler: ExtensionHandler<AdvisorBeforeRunEvent, AdvisorBeforeRunResult>): void;
 
 	// =========================================================================
 	// Tool Registration
