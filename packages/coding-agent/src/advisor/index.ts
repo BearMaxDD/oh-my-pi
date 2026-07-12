@@ -5,3 +5,4 @@ export * from "./runtime";
 export * from "./transcript-recorder";
 export * from "./watchdog";
 export * from "./compliance-verdict-tool";
+export * from "./run-augmentation";
