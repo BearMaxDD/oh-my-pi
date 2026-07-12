@@ -13,6 +13,8 @@ import type { SessionManager } from "../../session/session-manager";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { createExtensionModelQuery } from "./model-api";
 import type {
+	AdvisorBeforeRunEvent,
+	AdvisorBeforeRunResult,
 	AfterProviderResponseEvent,
 	AssistantThinkingRenderer,
 	BeforeAgentStartEvent,
@@ -124,6 +126,31 @@ async function raceHandlerWithTimeout<T>(
 	}
 }
 
+/**
+ * Merge two AdvisorBeforeRunResult values, preserving load order and
+ * detecting duplicate tool names.
+ */
+function mergeAdvisorBeforeRunResult(
+	current: AdvisorBeforeRunResult | undefined,
+	next: AdvisorBeforeRunResult | undefined,
+): AdvisorBeforeRunResult | undefined {
+	if (!next) return current;
+	const tools = [...(current?.additionalTools ?? []), ...(next.additionalTools ?? [])];
+	const seen = new Set<string>();
+	for (const tool of tools) {
+		if (seen.has(tool.name)) throw new Error(`duplicate advisor tool "${tool.name}"`);
+		seen.add(tool.name);
+	}
+	return Object.freeze({
+		additionalSystemContext: Object.freeze([
+			...(current?.additionalSystemContext ?? []),
+			...(next.additionalSystemContext ?? []),
+		]),
+		additionalTools: Object.freeze(tools),
+		metadata: Object.freeze({ ...(current?.metadata ?? {}), ...(next.metadata ?? {}) }),
+	});
+}
+
 const MAX_PENDING_CREDENTIAL_DISABLED = 32;
 
 /**
@@ -141,6 +168,7 @@ type RunnerEmitEvent = Exclude<
 	| BeforeAgentStartEvent
 	| ResourcesDiscoverEvent
 	| InputEvent
+	| AdvisorBeforeRunEvent
 >;
 
 type SessionBeforeEvent = Extract<
@@ -580,6 +608,7 @@ export class ExtensionRunner {
 		ctx: ExtensionContext,
 		ext: Extension,
 		timeoutMs: number,
+		throwOnTimeout?: boolean,
 	): Promise<TResult | undefined> {
 		try {
 			const handlerResult = await raceHandlerWithTimeout(Promise.resolve(handler(event, ctx)), timeoutMs);
@@ -595,12 +624,19 @@ export class ExtensionRunner {
 					event: event.type,
 					error,
 				});
+				if (throwOnTimeout) {
+					throw new Error(error);
+				}
 				return undefined;
 			}
 			return handlerResult as TResult | undefined;
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			const stack = err instanceof Error ? err.stack : undefined;
+			// Re-throw timeout errors that were explicitly thrown with throwOnTimeout
+			if (throwOnTimeout && message.includes("timed out")) {
+				throw err;
+			}
 			this.emitError({
 				extensionPath: ext.path,
 				event: event.type,
@@ -1036,5 +1072,39 @@ export class ExtensionRunner {
 		}
 
 		return undefined;
+	}
+
+	/**
+	 * Emit an `advisor_before_run` event to every subscribed extension.
+	 *
+	 * Results are merged in extension load order. Duplicate tool names across
+	 * extensions cause the call to reject. Each handler is bounded by
+	 * `extensionHandlerTimeoutMs`; timeout causes the handler to be skipped
+	 * and logged as an error.
+	 */
+	async emitBeforeRun(event: AdvisorBeforeRunEvent): Promise<AdvisorBeforeRunResult | undefined> {
+		const ctx = this.createContext();
+		const timeoutMs = handlerTimeoutForEvent(event.type);
+		let merged: AdvisorBeforeRunResult | undefined;
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("advisor_before_run");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				const handlerResult = await this.#runHandlerWithTimeout(
+					handler,
+					event,
+					ctx,
+					ext,
+					timeoutMs,
+					true,
+				) as AdvisorBeforeRunResult | undefined;
+
+				merged = mergeAdvisorBeforeRunResult(merged, handlerResult);
+			}
+		}
+
+		return merged;
 	}
 }
