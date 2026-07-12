@@ -82,7 +82,7 @@ describe("ExtensionAPI → ExtensionRuntime requestAdvisorReview forwarding", ()
 		let receivedRequest: unknown;
 		const mockAction: ExtensionActions["requestAdvisorReview"] = async request => {
 			receivedRequest = request;
-			return { accepted: true, reviewId: request.reviewId };
+			return { status: "accepted", reviewId: request.reviewId };
 		};
 
 		const ext = fakeExtensionNoHandler("ext1");
@@ -109,7 +109,7 @@ describe("ExtensionAPI → ExtensionRuntime requestAdvisorReview forwarding", ()
 			metadata: { source: "test" },
 		});
 
-		expect(result).toEqual({ accepted: true, reviewId: "rev-001" });
+		expect(result).toEqual({ status: "accepted", reviewId: "rev-001" });
 		expect(receivedRequest).toEqual({
 			reviewId: "rev-001",
 			metadata: { source: "test" },
@@ -129,7 +129,7 @@ describe("ExtensionAPI → ExtensionRuntime requestAdvisorReview forwarding", ()
 	// -----------------------------------------------------------------------
 	it("forwards receipt through the full initialize chain", async () => {
 		const mockAction: ExtensionActions["requestAdvisorReview"] = async request => {
-			return { accepted: false, reviewId: request.reviewId, reason: "busy" };
+			return { status: "rejected", reviewId: request.reviewId, reason: "busy" };
 		};
 
 		const ext = fakeExtensionNoHandler("ext1");
@@ -154,6 +154,6 @@ describe("ExtensionAPI → ExtensionRuntime requestAdvisorReview forwarding", ()
 			reviewId: "rev-002",
 		});
 
-		expect(result).toEqual({ accepted: false, reviewId: "rev-002", reason: "busy" });
+		expect(result).toEqual({ status: "rejected", reviewId: "rev-002", reason: "busy" });
 	});
 });

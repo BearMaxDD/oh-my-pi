@@ -118,7 +118,7 @@ export class ExtensionRuntime implements IExtensionRuntime {
 	requestAdvisorReview(_request: {
 		reviewId: string;
 		metadata?: Record<string, unknown>;
-	}): Promise<{ accepted: boolean; reviewId: string; reason?: string }> {
+	}): Promise<{ status: "accepted" | "rejected"; reviewId: string; reason?: string }> {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
 }
@@ -270,7 +270,7 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 	requestAdvisorReview(request: {
 		reviewId: string;
 		metadata?: Record<string, unknown>;
-	}): Promise<{ accepted: boolean; reviewId: string; reason?: string }> {
+	}): Promise<{ status: "accepted" | "rejected"; reviewId: string; reason?: string }> {
 		return this.runtime.requestAdvisorReview(request);
 	}
 
