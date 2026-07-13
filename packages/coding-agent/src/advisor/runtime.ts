@@ -27,8 +27,9 @@ export interface AdvisorAgent {
 	rollbackTo?(count: number): void;
 	readonly state: { messages: AgentMessage[]; error?: string };
 }
-
 export interface AdvisorRuntimeHost {
+	/** Primary session ID for observability correlation. // OMP-CUSTOM-PATCH:SP-1 */
+	readonly sessionId?: string; // OMP-CUSTOM-PATCH:SP-1
 	/** Live primary transcript (use `agent.state.messages`). */
 	snapshotMessages(): AgentMessage[];
 	/** Surface one advice note to the primary (enqueues into the session YieldQueue). */
@@ -89,6 +90,13 @@ interface PendingAdvisorRun {
 	metadata?: Readonly<Record<string, unknown>>;
 }
 
+/** Minimal event-emitter surface for advisor observable events. // OMP-CUSTOM-PATCH:SP-1 */
+interface AdvisorEventRunner { // OMP-CUSTOM-PATCH:SP-1
+	emit(event: { type: string; [key: string]: unknown }): Promise<unknown>; // OMP-CUSTOM-PATCH:SP-1
+	hasHandlers(eventType: string): boolean; // OMP-CUSTOM-PATCH:SP-1
+} // OMP-CUSTOM-PATCH:SP-1
+
+
 interface CatchupWaiter {
 	threshold: number;
 	resolve: () => void;
@@ -117,12 +125,13 @@ export class AdvisorRuntime {
 	 *  the in-flight advisor prompt, so the stale batch is dropped instead of
 	 *  being retried/requeued into the post-reset conversation. */
 	#epoch = 0;
-	disposed = false;
-
+	/** Flag set by {@link dispose} to short-circuit further work. // OMP-CUSTOM-PATCH:SP-1 */
+	disposed = false; // OMP-CUSTOM-PATCH:SP-1
 	constructor(
 		private readonly agent: AdvisorAgent,
 		private readonly host: AdvisorRuntimeHost,
 		private readonly retryDelayMs = 1000,
+		private readonly extensionRunner?: AdvisorEventRunner, // OMP-CUSTOM-PATCH:SP-1
 	) {}
 
 	get backlog(): number {
@@ -387,7 +396,6 @@ export class AdvisorRuntime {
 					this.#notifyWaiters();
 					continue;
 				}
-
 				let success = false;
 				// Capture the advisor's message count BEFORE the prompt so a failure can
 				// roll back the user batch + synthetic assistant-error turn `Agent.#runLoop`
@@ -395,6 +403,20 @@ export class AdvisorRuntime {
 				// failed batch on top of the stale turns and the dropped-after-3 path
 				// would leak orphan failures into the next successful run's context.
 				const messageSnapshot = this.agent.state.messages.length;
+				/** Generated once per batch attempt for observability correlation. // OMP-CUSTOM-PATCH:SP-1 */
+				const advisorSessionId = crypto.randomUUID(); // OMP-CUSTOM-PATCH:SP-1
+				const eventSessionId = this.host.sessionId ?? crypto.randomUUID(); // OMP-CUSTOM-PATCH:SP-1
+				const runStartTime = Date.now(); // OMP-CUSTOM-PATCH:SP-1
+				// Emit advisor_run_started before execution // OMP-CUSTOM-PATCH:SP-1
+				if (this.extensionRunner?.hasHandlers("advisor_run_started")) { // OMP-CUSTOM-PATCH:SP-1
+					void this.extensionRunner.emit({ // OMP-CUSTOM-PATCH:SP-1
+						type: "advisor_run_started", // OMP-CUSTOM-PATCH:SP-1
+						sessionId: eventSessionId, // OMP-CUSTOM-PATCH:SP-1
+						advisorSessionId, // OMP-CUSTOM-PATCH:SP-1
+						reviewId: first.reviewId, // OMP-CUSTOM-PATCH:SP-1
+						trigger: first.trigger, // OMP-CUSTOM-PATCH:SP-1
+					}); // OMP-CUSTOM-PATCH:SP-1
+				} // OMP-CUSTOM-PATCH:SP-1
 				try {
 					// Reset the host's per-update advisor state (one-advise-per-update
 					// gate) before each model cycle, so the new batch starts with a
@@ -466,6 +488,16 @@ export class AdvisorRuntime {
 				}
 
 				if (success && this.#epoch === epoch) {
+					// Emit advisor_run_finished event // OMP-CUSTOM-PATCH:SP-1
+					if (this.extensionRunner?.hasHandlers("advisor_run_finished")) { // OMP-CUSTOM-PATCH:SP-1
+						void this.extensionRunner.emit({ // OMP-CUSTOM-PATCH:SP-1
+							type: "advisor_run_finished", // OMP-CUSTOM-PATCH:SP-1
+							sessionId: eventSessionId, // OMP-CUSTOM-PATCH:SP-1
+							advisorSessionId, // OMP-CUSTOM-PATCH:SP-1
+							reviewId: first.reviewId, // OMP-CUSTOM-PATCH:SP-1
+							duration: Date.now() - runStartTime, // OMP-CUSTOM-PATCH:SP-1
+						}); // OMP-CUSTOM-PATCH:SP-1
+					} // OMP-CUSTOM-PATCH:SP-1
 					this.#backlog = Math.max(0, this.#backlog - finalTurns);
 					this.#notifyWaiters();
 				}

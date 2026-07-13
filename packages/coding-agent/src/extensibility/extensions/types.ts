@@ -922,6 +922,69 @@ export interface AdvisorReviewReceipt {
 	reason?: string;
 }
 
+/** Fired when an advisor run starts. */
+export interface AdvisorRunStartedEvent {
+	type: "advisor_run_started";
+	sessionId: string;
+	advisorSessionId: string;
+	reviewId?: string;
+	trigger: AdvisorRunTrigger;
+} // OMP-CUSTOM-PATCH:SP-1
+
+/** Fired when an advisor run finishes. */
+export interface AdvisorRunFinishedEvent {
+	type: "advisor_run_finished";
+	sessionId: string;
+	advisorSessionId: string;
+	reviewId?: string;
+	duration: number;
+} // OMP-CUSTOM-PATCH:SP-1
+
+/** Fired when an advisor run makes a tool call. */
+export interface AdvisorToolCallEvent {
+	type: "advisor_tool_call";
+	advisorSessionId: string;
+	reviewId?: string;
+	toolName: string;
+	timestamp: number;
+} // OMP-CUSTOM-PATCH:SP-1
+
+/** Fired when an advisor run receives a tool result. */
+export interface AdvisorToolResultEvent {
+	type: "advisor_tool_result";
+	advisorSessionId: string;
+	reviewId?: string;
+	toolName: string;
+	success: boolean;
+} // OMP-CUSTOM-PATCH:SP-1
+
+/** Fired when an advisor subagent starts. */
+export interface AdvisorSubagentStartedEvent {
+	type: "advisor_subagent_started";
+	advisorSessionId: string;
+	reviewId?: string;
+	subagentId: string;
+	task: string;
+} // OMP-CUSTOM-PATCH:SP-1
+
+/** Fired when an advisor subagent reports progress. */
+export interface AdvisorSubagentProgressEvent {
+	type: "advisor_subagent_progress";
+	advisorSessionId: string;
+	reviewId?: string;
+	subagentId: string;
+	status: string;
+} // OMP-CUSTOM-PATCH:SP-1
+
+/** Fired when an advisor subagent finishes. */
+export interface AdvisorSubagentFinishedEvent {
+	type: "advisor_subagent_finished";
+	advisorSessionId: string;
+	reviewId?: string;
+	subagentId: string;
+	duration: number;
+} // OMP-CUSTOM-PATCH:SP-1
+
 /** Union of all event types */
 export type ExtensionEvent =
 	| ResourcesDiscoverEvent
@@ -956,7 +1019,14 @@ export type ExtensionEvent =
 	| ToolResultEvent
 	| ToolApprovalRequestedEvent
 	| ToolApprovalResolvedEvent
-	| AdvisorBeforeRunEvent;
+	| AdvisorBeforeRunEvent
+	| AdvisorRunStartedEvent
+	| AdvisorRunFinishedEvent
+	| AdvisorToolCallEvent
+	| AdvisorToolResultEvent
+	| AdvisorSubagentStartedEvent
+	| AdvisorSubagentProgressEvent
+	| AdvisorSubagentFinishedEvent;
 
 // ============================================================================
 // Event Results
@@ -1137,6 +1207,13 @@ export interface ExtensionAPI {
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "user_python", handler: ExtensionHandler<UserPythonEvent, UserPythonEventResult>): void;
 	on(event: "advisor_before_run", handler: ExtensionHandler<AdvisorBeforeRunEvent, AdvisorBeforeRunResult>): void;
+	on(event: "advisor_run_started", handler: ExtensionHandler<AdvisorRunStartedEvent>): void; // OMP-CUSTOM-PATCH:SP-1
+	on(event: "advisor_run_finished", handler: ExtensionHandler<AdvisorRunFinishedEvent>): void; // OMP-CUSTOM-PATCH:SP-1
+	on(event: "advisor_tool_call", handler: ExtensionHandler<AdvisorToolCallEvent>): void; // OMP-CUSTOM-PATCH:SP-1
+	on(event: "advisor_tool_result", handler: ExtensionHandler<AdvisorToolResultEvent>): void; // OMP-CUSTOM-PATCH:SP-1
+	on(event: "advisor_subagent_started", handler: ExtensionHandler<AdvisorSubagentStartedEvent>): void; // OMP-CUSTOM-PATCH:SP-1
+	on(event: "advisor_subagent_progress", handler: ExtensionHandler<AdvisorSubagentProgressEvent>): void; // OMP-CUSTOM-PATCH:SP-1
+	on(event: "advisor_subagent_finished", handler: ExtensionHandler<AdvisorSubagentFinishedEvent>): void; // OMP-CUSTOM-PATCH:SP-1
 
 	// =========================================================================
 	// Tool Registration
