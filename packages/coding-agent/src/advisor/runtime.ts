@@ -74,7 +74,7 @@ export interface AdvisorRuntimeHost {
 	 */
 	beforeRun?(input: AdvisorBeforeRunInput): Promise<AdvisorRunAugmentation | undefined>;
 }
-export type AdvisorRunTrigger = "turn_end" | "compliance_review";
+export type AdvisorRunTrigger = "turn_end" | "compliance_review" | "impact_analysis" | "git_pre_push" | "file_change" | "scheduled" | "manual_review"; // OMP-CUSTOM-PATCH:SP-1
 
 export interface AdvisorBeforeRunInput {
 	trigger: AdvisorRunTrigger;
@@ -138,7 +138,7 @@ export class AdvisorRuntime {
 		return this.#backlog;
 	}
 
-	requestReview(input: { trigger: "compliance_review"; reviewId: string; metadata?: Record<string, unknown> }): {
+	requestReview(input: { trigger: Exclude<AdvisorRunTrigger, "turn_end">; reviewId: string; metadata?: Record<string, unknown> }): {
 		status: "accepted" | "rejected";
 		reviewId: string;
 		reason?: string;

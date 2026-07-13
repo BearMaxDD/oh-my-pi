@@ -88,8 +88,12 @@ export class AdvisorTranscriptRecorder {
 	 * (the advisor's "session update" prompts) are persisted but flagged
 	 * `synthetic`/agent-attributed so they never inflate user-message metrics.
 	 * Non-conversational message kinds are skipped.
+	 *
+	 * @param trigger Optional trigger context that originated this advisor turn
+	 *   (e.g. "turn_end", "compliance_review"). Stored alongside the persisted
+	 *   message for downstream observability. // OMP-CUSTOM-PATCH:SP-1
 	 */
-	record(message: AgentMessage): void {
+	record(message: AgentMessage, trigger?: string): void { // OMP-CUSTOM-PATCH:SP-1
 		let persisted: Message;
 		switch (message.role) {
 			case "assistant":
@@ -104,6 +108,9 @@ export class AdvisorTranscriptRecorder {
 			default:
 				return;
 		}
+		if (trigger !== undefined) { // OMP-CUSTOM-PATCH:SP-1
+			(persisted as Record<string, unknown>).trigger = trigger; // OMP-CUSTOM-PATCH:SP-1
+		} // OMP-CUSTOM-PATCH:SP-1
 		const sessionFile = this.resolveSessionFile();
 		if (!sessionFile?.endsWith(JSONL_SUFFIX)) return;
 		const file = path.join(sessionFile.slice(0, -JSONL_SUFFIX.length), this.#filename);

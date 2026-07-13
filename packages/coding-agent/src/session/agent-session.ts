@@ -232,7 +232,7 @@ import type {
 	TurnStartEvent,
 } from "../extensibility/extensions";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
-import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
+import type { AdvisorRunTrigger, CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import type { HookCommandContext } from "../extensibility/hooks/types";
 import type { RecoveredRetryError } from "../extensibility/shared-events";
@@ -16246,17 +16246,43 @@ export class AgentSession {
 	 *
 	 * When the advisor is disabled or unavailable, returns a receipt with
 	 * `status: "rejected"` and a reason.
+	 *
+	 * The `trigger` field is passed through to the advisor runtime. Unknown
+	 * triggers fall back to "compliance_review". // OMP-CUSTOM-PATCH:SP-1
 	 */
 	async requestAdvisorReview(request: {
 		reviewId: string;
+		trigger?: Exclude<AdvisorRunTrigger, "turn_end">; // OMP-CUSTOM-PATCH:SP-1
 		metadata?: Record<string, unknown>;
 	}): Promise<{ status: "accepted" | "rejected"; reviewId: string; reason?: string }> {
 		if (!this.#advisorEnabled) return { status: "rejected", reviewId: request.reviewId, reason: "advisor_disabled" };
 		if (!this.#buildAdvisorRuntime(true) || this.#advisors.length === 0) {
 			return { status: "rejected", reviewId: request.reviewId, reason: "advisor_unavailable" };
 		}
-		return this.#advisors[0].runtime.requestReview({ trigger: "compliance_review", ...request });
+		const trigger = this.#resolveReviewTrigger(request.trigger); // OMP-CUSTOM-PATCH:SP-1
+		return this.#advisors[0].runtime.requestReview({ trigger, reviewId: request.reviewId, metadata: request.metadata });
 	}
+
+	/** Known advisor review triggers (all triggers except "turn_end"). // OMP-CUSTOM-PATCH:SP-1 */
+	static #knownReviewTriggers: Record<string, true> = { // OMP-CUSTOM-PATCH:SP-1
+		compliance_review: true, // OMP-CUSTOM-PATCH:SP-1
+		impact_analysis: true, // OMP-CUSTOM-PATCH:SP-1
+		git_pre_push: true, // OMP-CUSTOM-PATCH:SP-1
+		file_change: true, // OMP-CUSTOM-PATCH:SP-1
+		scheduled: true, // OMP-CUSTOM-PATCH:SP-1
+		manual_review: true, // OMP-CUSTOM-PATCH:SP-1
+	}; // OMP-CUSTOM-PATCH:SP-1
+
+	/** Resolve a review trigger with fallback to "compliance_review". // OMP-CUSTOM-PATCH:SP-1 */
+	#resolveReviewTrigger(trigger: string | undefined): "compliance_review" | "git_pre_push" | "impact_analysis" | "file_change" | "scheduled" | "manual_review" { // OMP-CUSTOM-PATCH:SP-1
+		if (trigger && AgentSession.#knownReviewTriggers[trigger]) { // OMP-CUSTOM-PATCH:SP-1
+			return trigger as "compliance_review" | "git_pre_push" | "impact_analysis" | "file_change" | "scheduled" | "manual_review"; // OMP-CUSTOM-PATCH:SP-1
+		} // OMP-CUSTOM-PATCH:SP-1
+		if (trigger) { // OMP-CUSTOM-PATCH:SP-1
+			logger.warn(`[advisor] unknown review trigger "${trigger}", falling back to "compliance_review"`); // OMP-CUSTOM-PATCH:SP-1
+		} // OMP-CUSTOM-PATCH:SP-1
+		return "compliance_review"; // OMP-CUSTOM-PATCH:SP-1
+	} // OMP-CUSTOM-PATCH:SP-1
 
 	/**
 	 * Toggle the advisor setting and start/stop the runtime accordingly.

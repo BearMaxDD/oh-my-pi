@@ -31,6 +31,7 @@ interface AdvisorEntry {
 		usage?: { input?: number };
 		synthetic?: boolean;
 		attribution?: string;
+		trigger?: string; // OMP-CUSTOM-PATCH:SP-1
 	};
 }
 
@@ -161,4 +162,36 @@ describe("AdvisorTranscriptRecorder", () => {
 			expect(second[0].message?.usage?.input).toBe(2);
 		});
 	});
+
+	it("stores trigger field in recorded assistant entries when provided", async () => { // OMP-CUSTOM-PATCH:SP-1
+		await withTempDir(async dir => { // OMP-CUSTOM-PATCH:SP-1
+			const sessionFile = path.join(dir, "sess.jsonl"); // OMP-CUSTOM-PATCH:SP-1
+			const recorder = new AdvisorTranscriptRecorder( // OMP-CUSTOM-PATCH:SP-1
+				() => sessionFile, // OMP-CUSTOM-PATCH:SP-1
+				() => dir, // OMP-CUSTOM-PATCH:SP-1
+			); // OMP-CUSTOM-PATCH:SP-1
+			recorder.record(assistantMessage("reviewing with trigger", 7), "turn_end"); // OMP-CUSTOM-PATCH:SP-1
+			await recorder.close(); // OMP-CUSTOM-PATCH:SP-1
+ // OMP-CUSTOM-PATCH:SP-1
+			const messages = await readMessageEntries(path.join(dir, "sess", ADVISOR_TRANSCRIPT_FILENAME)); // OMP-CUSTOM-PATCH:SP-1
+			expect(messages).toHaveLength(1); // OMP-CUSTOM-PATCH:SP-1
+			expect(messages[0].message?.trigger).toBe("turn_end"); // OMP-CUSTOM-PATCH:SP-1
+		}); // OMP-CUSTOM-PATCH:SP-1
+	}); // OMP-CUSTOM-PATCH:SP-1
+ // OMP-CUSTOM-PATCH:SP-1
+	it("parses old entries without trigger field", async () => { // OMP-CUSTOM-PATCH:SP-1
+		await withTempDir(async dir => { // OMP-CUSTOM-PATCH:SP-1
+			const sessionFile = path.join(dir, "sess.jsonl"); // OMP-CUSTOM-PATCH:SP-1
+			const recorder = new AdvisorTranscriptRecorder( // OMP-CUSTOM-PATCH:SP-1
+				() => sessionFile, // OMP-CUSTOM-PATCH:SP-1
+				() => dir, // OMP-CUSTOM-PATCH:SP-1
+			); // OMP-CUSTOM-PATCH:SP-1
+			recorder.record(assistantMessage("no trigger", 3)); // OMP-CUSTOM-PATCH:SP-1
+			await recorder.close(); // OMP-CUSTOM-PATCH:SP-1
+ // OMP-CUSTOM-PATCH:SP-1
+			const messages = await readMessageEntries(path.join(dir, "sess", ADVISOR_TRANSCRIPT_FILENAME)); // OMP-CUSTOM-PATCH:SP-1
+			expect(messages).toHaveLength(1); // OMP-CUSTOM-PATCH:SP-1
+			expect(messages[0].message?.trigger).toBeUndefined(); // OMP-CUSTOM-PATCH:SP-1
+		}); // OMP-CUSTOM-PATCH:SP-1
+	}); // OMP-CUSTOM-PATCH:SP-1
 });
