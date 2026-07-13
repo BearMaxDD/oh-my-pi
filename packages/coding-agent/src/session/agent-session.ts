@@ -2609,59 +2609,58 @@ export class AgentSession {
 				// so two SessionManagers never hold the same file at once.
 				this.#advisorRecorderClosed,
 			);
-			const runtime = new AdvisorRuntime(advisorAgentFacade, {
-				snapshotMessages: () => this.agent.state.messages,
-				enqueueAdvice: (note, severity) => this.#routeAdvice(advisorRef, note, severity),
-				maintainContext: incomingTokens => this.#maintainAdvisorContext(advisorRef, incomingTokens),
-				obfuscator: this.#obfuscator,
-				beginAdvisorUpdate: () => advisorRef.emissionGuard.beginUpdate(),
-				onTurnError: async error => {
-					// Mirror the auth-gateway's usage-limit remedy: the in-stream a/b/c
-					// auth retry rotates through siblings within one request but never
-					// blocks the LAST failing credential, so without this the advisor
-					// re-picks the same exhausted account every retry. Usage limits
-					// only — other failures keep the plain retry/notify path (never
-					// suspect-mark a credential on a transient advisor error).
-					const message = error instanceof Error ? error.message : String(error);
-					if (!isUsageLimitOutcome(extractHttpStatusFromError(error), message)) return;
-					await this.#modelRegistry.authStorage.markUsageLimitReached(
-						advisorModel.provider,
-						advisorProviderSessionId,
-						{
-							retryAfterMs: extractRetryHint(undefined, message),
-							baseUrl: advisorModel.baseUrl,
-							modelId: advisorModel.id,
-						},
-					);
+			const runtime = new AdvisorRuntime(
+				advisorAgentFacade,
+				{
+					snapshotMessages: () => this.agent.state.messages,
+					enqueueAdvice: (note, severity) => this.#routeAdvice(advisorRef, note, severity),
+					maintainContext: incomingTokens => this.#maintainAdvisorContext(advisorRef, incomingTokens),
+					obfuscator: this.#obfuscator,
+					beginAdvisorUpdate: () => advisorRef.emissionGuard.beginUpdate(),
+					onTurnError: async error => {
+						const message = error instanceof Error ? error.message : String(error);
+						if (!isUsageLimitOutcome(extractHttpStatusFromError(error), message)) return;
+						await this.#modelRegistry.authStorage.markUsageLimitReached(
+							advisorModel.provider,
+							advisorProviderSessionId,
+							{
+								retryAfterMs: extractRetryHint(undefined, message),
+								baseUrl: advisorModel.baseUrl,
+								modelId: advisorModel.id,
+							},
+						);
+					},
+					notifyFailure: error => {
+						const message = error instanceof Error ? error.message : String(error);
+						this.emitNotice(
+							"warning",
+							`Advisor${slug ? ` "${advisorName}"` : ""} unavailable for ${formatModelString(advisorModel)}: ${message}`,
+							"advisor",
+						);
+					},
+					beforeRun: async input => {
+						const event: AdvisorBeforeRunEvent = {
+							type: "advisor_before_run",
+							sessionId: this.sessionId,
+							advisorId: slug || advisorName,
+							trigger: input.trigger,
+							messages: Object.freeze(structuredClone(this.agent.state.messages)),
+							metadata: Object.freeze({
+								...(input.metadata ?? {}),
+								...(input.reviewId ? { reviewId: input.reviewId } : {}),
+							}),
+						};
+						const result = await this.#extensionRunner?.emitBeforeRun(event);
+						if (!result) return undefined;
+						return {
+							additionalSystemContext: result.additionalSystemContext ?? [],
+							additionalTools: result.additionalTools ?? [],
+						};
+					},
 				},
-				notifyFailure: error => {
-					const message = error instanceof Error ? error.message : String(error);
-					this.emitNotice(
-						"warning",
-						`Advisor${slug ? ` "${advisorName}"` : ""} unavailable for ${formatModelString(advisorModel)}: ${message}`,
-						"advisor",
-					);
-				},
-				beforeRun: async input => {
-					const event: AdvisorBeforeRunEvent = {
-						type: "advisor_before_run",
-						sessionId: this.sessionId,
-						advisorId: slug || advisorName,
-						trigger: input.trigger,
-						messages: Object.freeze(structuredClone(this.agent.state.messages)),
-						metadata: Object.freeze({
-							...(input.metadata ?? {}),
-							...(input.reviewId ? { reviewId: input.reviewId } : {}),
-						}),
-					};
-					const result = await this.#extensionRunner?.emitBeforeRun(event);
-					if (!result) return undefined;
-					return {
-						additionalSystemContext: result.additionalSystemContext ?? [],
-						additionalTools: result.additionalTools ?? [],
-					};
-				},
-			});
+				undefined,
+				this.#extensionRunner as never, // OMP-CUSTOM-PATCH:SP-1
+			);
 
 			const advisorRef: ActiveAdvisor = {
 				name: advisorName,
