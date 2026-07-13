@@ -889,7 +889,7 @@ export function isToolCallEventType(toolName: string, event: ToolCallEvent): boo
 // Advisor Events
 // ============================================================================
 
-export type AdvisorRunTrigger = "turn_end" | "compliance_review";
+export type AdvisorRunTrigger = "turn_end" | "compliance_review" | "impact_analysis" | "git_pre_push" | "file_change" | "scheduled" | "manual_review"; // OMP-CUSTOM-PATCH:SP-1
 
 /** Fired before an advisor runs. Extensions can inject system context and tools. */
 export interface AdvisorBeforeRunEvent {
@@ -911,6 +911,7 @@ export interface AdvisorBeforeRunResult {
 /** Request payload for extension-initiated advisor review. */
 export interface AdvisorReviewRequest {
 	reviewId: string;
+	trigger?: Exclude<AdvisorRunTrigger, "turn_end">; // OMP-CUSTOM-PATCH:SP-1
 	metadata?: Record<string, unknown>;
 }
 
